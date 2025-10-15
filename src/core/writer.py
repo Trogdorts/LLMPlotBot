@@ -28,17 +28,33 @@ class ResultWriter:
 
     def write(self, id: str, model: str, prompt_hash: str, response: Dict[str, Any]):
         """Queue a single write and flush if thresholds are met."""
-        self.buffer.append((id, model, prompt_hash, response))
-        if len(self.buffer) >= self.flush_interval or (time.time() - self.last_flush) > self.flush_seconds:
-            self.flush()
+        with self.lock:
+            self.buffer.append((id, model, prompt_hash, response))
+            should_flush = (
+                len(self.buffer) >= self.flush_interval
+                or (time.time() - self.last_flush) > self.flush_seconds
+            )
+            if should_flush:
+                self._flush_locked()
 
     def flush(self):
         """Persist all buffered writes to disk with atomic file replacement."""
         with self.lock:
-            for id, model, prompt_hash, response in self.buffer:
-                self._write_one(id, model, prompt_hash, response)
-            self.buffer.clear()
-            self.last_flush = time.time()
+            self._flush_locked()
+
+    def _flush_locked(self):
+        if not self.buffer:
+            return
+
+        pending = list(self.buffer)
+        self.buffer.clear()
+        self.last_flush = time.time()
+
+        for id, model, prompt_hash, response in pending:
+            self._write_one(id, model, prompt_hash, response)
+
+        if self.logger:
+            self.logger.info(f"Flushed {len(pending)} result(s) to disk.")
 
     def _write_one(self, id, model, prompt_hash, response):
         path = os.path.join(self.base, f"{id}.json")

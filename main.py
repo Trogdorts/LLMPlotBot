@@ -94,18 +94,24 @@ def main():
     ShutdownManager(shutdown_event, writer, logger).register()
 
     # ---------- Generate tasks ----------
-    logger.debug("Generating tasks for queue...")
+    logger.info("Preparing task queues.")
     task_q, batch_q = queue.Queue(), queue.Queue()
 
-    count = 0
+    title_items = list(titles.items())
+    if CONFIG["TEST_MODE"]:
+        per_model_limit = CONFIG["BATCH_SIZE"] * CONFIG["TEST_BATCHES"]
+        title_items = title_items[:per_model_limit]
+        logger.info(
+            f"TEST_MODE enabled: limiting to {per_model_limit} task(s) per model across {len(CONFIG['LLM_ENDPOINTS'])} model(s)."
+        )
+
     for model in CONFIG["LLM_ENDPOINTS"]:
-        for tid, info in titles.items():
+        model_count = 0
+        for tid, info in title_items:
             task_q.put(Task(tid, info["title"], model, prompt_hash, prompt_text))
-            count += 1
-            if CONFIG["TEST_MODE"] and count >= CONFIG["BATCH_SIZE"]:
-                break
-        if CONFIG["TEST_MODE"]:
-            break
+            model_count += 1
+        logger.info(f"Queued {model_count} task(s) for model {model}.")
+
     logger.info(f"Total tasks queued: {task_q.qsize()}")
 
     # ---------- Initialize model connectors ----------

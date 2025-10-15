@@ -4,6 +4,7 @@ Worker thread that consumes batches, calls the model connector, and persists res
 
 import threading
 import queue
+from itertools import zip_longest
 from typing import Dict
 from .writer import ResultWriter
 from .model_connector import ModelConnector
@@ -22,7 +23,7 @@ class Worker(threading.Thread):
         self.logger = logger
 
     def run(self):
-        self.logger.debug("Worker thread started.")
+        self.logger.info("Worker thread started.")
         self.logger.debug(f"Active connectors: {list(self.connectors.keys())}")
 
         while not self.shutdown_event.is_set():
@@ -38,7 +39,7 @@ class Worker(threading.Thread):
                 continue
 
             model = batch[0].model
-            self.logger.debug(f"Worker processing batch of {len(batch)} for model={model}")
+            self.logger.info(f"Processing batch of {len(batch)} task(s) for model={model}.")
 
             connector = self.connectors.get(model)
             if not connector:
@@ -46,12 +47,19 @@ class Worker(threading.Thread):
                 self.batch_q.task_done()
                 continue
 
-            responses = connector.send_batch(batch)
+            responses = connector.send_batch(batch) or []
+            received = len([r for r in responses if r]) if responses else 0
+            if len(responses) != len(batch):
+                self.logger.warning(
+                    f"Model {model} returned {len(responses)} response(s) for {len(batch)} task(s); padding missing entries."
+                )
             self.logger.debug(
-                f"Worker got {len([r for r in responses if r])}/{len(batch)} valid responses for model={model}"
+                f"Worker got {received}/{len(batch)} valid responses for model={model}"
             )
 
-            for task, response in zip(batch, responses):
+            for task, response in zip_longest(batch, responses, fillvalue=None):
+                if task is None:
+                    continue
                 if response:
                     # Preserve the original headline (title)
                     if isinstance(response, dict):
@@ -62,4 +70,4 @@ class Worker(threading.Thread):
 
             self.batch_q.task_done()
 
-        self.logger.debug("Worker shutting down gracefully.")
+        self.logger.info("Worker thread exiting.")

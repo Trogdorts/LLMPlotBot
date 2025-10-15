@@ -52,8 +52,8 @@ def read_json_file(path):
 
 def build_cache(config, logger):
     """Walk JSON_DIR, extract IDs and titles using threads."""
-    json_dir = config["JSON_DIR"]
-    max_workers = config["MAX_WORKERS"]
+    json_dir = config.get("JSON_DIR", config["BASE_DIR"])
+    max_workers = config.get("MAX_WORKERS", 4)
     index = {}
     start = datetime.now()
     logger.info(f"Scanning {json_dir}")

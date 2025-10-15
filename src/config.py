@@ -19,8 +19,7 @@ CONFIG = {
     "BATCH_TIMEOUT": 2.0,             # seconds to flush partial batch
     "RETRY_LIMIT": 3,                 # per-task retry cap
     "REQUEST_TIMEOUT": 90,            # seconds for LLM HTTP request
-    "LLM_ENDPOINTS": {
-        # Model name -> endpoint URL
-        "creative-writing-model": "http://localhost:1234/v1/chat/completions"
-    }
+    "LLM_BASE_URL": "http://localhost:1234",
+    "LLM_MODELS": [],                # optional explicit list of model keys to use
+    "LLM_ENDPOINTS": {},
 }

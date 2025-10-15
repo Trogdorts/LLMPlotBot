@@ -42,7 +42,10 @@ class TaskRunner:
                 self.logger.error("No connector available for model %s", model)
                 continue
 
-            connector.start_session(tasks[0].prompt_text)
+            connector.start_session(
+                tasks[0].prompt_dynamic,
+                tasks[0].prompt_formatting,
+            )
             try:
                 self._process_model_tasks(connector, tasks)
             finally:

@@ -19,4 +19,10 @@ CONFIG = {
     "LLM_BASE_URL": "http://localhost:1234",
     "LLM_MODELS": [],                # optional explicit list of model keys to use
     "LLM_ENDPOINTS": {},
+    "WRITE_STRATEGY": "immediate",   # "immediate" to persist per result, "batch" for buffered writes
+    "WRITE_BATCH_SIZE": 25,           # used when WRITE_STRATEGY == "batch"
+    "WRITE_BATCH_SECONDS": 5.0,       # max age before flushing buffered writes
+    "FILE_LOCK_TIMEOUT": 10.0,        # seconds to wait for a result file lock
+    "FILE_LOCK_POLL_INTERVAL": 0.1,   # seconds between lock acquisition attempts
+    "FILE_LOCK_STALE_SECONDS": 300.0, # clean up lock files older than this
 }

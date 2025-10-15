@@ -82,13 +82,22 @@ def main():
     logger.info("Loaded %s titles for processing.", len(titles))
 
     # ---------- Load prompt ----------
-    prompt = load_and_archive_prompt(CONFIG["BASE_DIR"], logger)
-    prompt_text, prompt_hash = prompt["prompt"], prompt["hash"]
+    prompt_bundle = load_and_archive_prompt(CONFIG["BASE_DIR"], logger)
+    prompt_hash = prompt_bundle.prompt_hash
     logger.info("Active prompt hash: %s", prompt_hash)
 
     # ---------- Setup global objects ----------
     shutdown_event = threading.Event()
-    writer = ResultWriter(CONFIG["GENERATED_DIR"], logger=logger)
+    writer = ResultWriter(
+        CONFIG["GENERATED_DIR"],
+        strategy=CONFIG.get("WRITE_STRATEGY", "immediate"),
+        flush_interval=CONFIG.get("WRITE_BATCH_SIZE", 1),
+        flush_seconds=CONFIG.get("WRITE_BATCH_SECONDS", 5.0),
+        lock_timeout=CONFIG.get("FILE_LOCK_TIMEOUT", 10.0),
+        lock_poll_interval=CONFIG.get("FILE_LOCK_POLL_INTERVAL", 0.1),
+        lock_stale_seconds=CONFIG.get("FILE_LOCK_STALE_SECONDS", 300.0),
+        logger=logger,
+    )
     ShutdownManager(shutdown_event, writer, logger).register()
 
     # ---------- Prepare task lists ----------
@@ -112,7 +121,14 @@ def main():
     for model in connectors:
         for tid, info in title_items:
             tasks_by_model[model].append(
-                Task(tid, info["title"], model, prompt_hash, prompt_text)
+                Task(
+                    tid,
+                    info["title"],
+                    model,
+                    prompt_hash,
+                    prompt_bundle.dynamic_section,
+                    prompt_bundle.formatting_section,
+                )
             )
 
     total_tasks = sum(len(items) for items in tasks_by_model.values())

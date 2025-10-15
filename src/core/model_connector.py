@@ -46,14 +46,17 @@ class ModelConnector:
         self._headline_counter = 0
 
     # ------------------------------------------------------------------
-    def start_session(self, prompt_text: str) -> None:
+    def start_session(self, prompt_dynamic: str, prompt_formatting: str) -> None:
         """Initialise the persistent message history for this model."""
+
         self.logger.info("Starting session for model %s", self.model)
-        cleaned_prompt = clean_prompt_text(prompt_text)
-        self._session_messages = [
-            {"role": "system", "content": self.JSON_ONLY_INSTRUCTION},
-            {"role": "user", "content": cleaned_prompt},
-        ]
+        dynamic = self._normalise_prompt_section(prompt_dynamic)
+        formatting = self._normalise_prompt_section(prompt_formatting)
+        self._session_messages = [{"role": "system", "content": self.JSON_ONLY_INSTRUCTION}]
+        if dynamic:
+            self._session_messages.append({"role": "user", "content": dynamic})
+        if formatting:
+            self._session_messages.append({"role": "user", "content": formatting})
         self._history = []
         self._active = True
         self._headline_counter = 0
@@ -107,7 +110,8 @@ class ModelConnector:
             self.logger.error("[%s] Failed to parse valid JSON object.", self.model)
             return None
 
-        if not self._validate_schema(parsed_response):
+        normalized = self._normalize_payload(parsed_response)
+        if normalized is None:
             self.logger.error("[%s] Response failed schema validation.", self.model)
             return None
 
@@ -115,7 +119,7 @@ class ModelConnector:
         self._history.extend([user_message, {"role": "assistant", "content": content_text}])
         self._headline_counter += 1
 
-        return parsed_response
+        return normalized
 
     # ------------------------------------------------------------------
     def reinforce_compliance(self) -> None:
@@ -166,27 +170,28 @@ class ModelConnector:
 
     def _repair_and_parse_json(self, text: str):
         original = text.strip()
-        text = re.sub(r"[\n\r\t]+", " ", original)
-        text = re.sub(r"\s{2,}", " ", text)
+        fence_cleaned = re.sub(r"```(?:json)?", "", original, flags=re.IGNORECASE)
+        fence_cleaned = fence_cleaned.replace("```", "").strip()
 
-        try:
-            return json.loads(text)
-        except Exception:
-            pass
+        # Try direct parse of the cleaned response.
+        for candidate in (fence_cleaned, original):
+            if candidate:
+                normalized = self._trim_to_json(candidate)
+                if normalized:
+                    try:
+                        return json.loads(normalized)
+                    except Exception:
+                        pass
 
-        text2 = re.sub(r"}\s*{", "},{", text)
-        try:
-            return json.loads(text2)
-        except Exception:
-            pass
+        # Replace adjacent objects with array-style separators.
+        squashed = re.sub(r"}\s*{", "},{", fence_cleaned)
+        if squashed != fence_cleaned:
+            try:
+                return json.loads(f"[{squashed}]")
+            except Exception:
+                pass
 
-        try:
-            if text.strip().startswith("{") and text.strip().endswith("}"):
-                return json.loads(text)
-        except Exception:
-            pass
-
-        objs = re.findall(r"\{[^{}]*\}", original)
+        objs = re.findall(r"\{[^{}]*\}", fence_cleaned)
         result = []
         for obj_text in objs:
             try:
@@ -195,24 +200,138 @@ class ModelConnector:
                 continue
         return result if result else None
 
-    def _validate_schema(self, payload: Dict[str, object]) -> bool:
-        missing = self.REQUIRED_KEYS - payload.keys()
-        if missing:
-            self.logger.debug("[%s] Missing keys: %s", self.model, ", ".join(sorted(missing)))
-            return False
+    def _trim_to_json(self, text: str) -> Optional[str]:
+        """Return the substring spanning the first and last JSON delimiters."""
 
-        for key in self.REQUIRED_KEYS - self.LIST_KEYS:
-            if not isinstance(payload.get(key), str):
-                self.logger.debug("[%s] Key '%s' should be a string.", self.model, key)
-                return False
+        stripped = text.strip()
+        if not stripped:
+            return None
+
+        if stripped[0] in "[{" and stripped[-1] in "]}":
+            return stripped
+
+        start_obj = stripped.find("{")
+        end_obj = stripped.rfind("}")
+        start_arr = stripped.find("[")
+        end_arr = stripped.rfind("]")
+
+        candidates = []
+        if start_obj != -1 and end_obj > start_obj:
+            candidates.append(stripped[start_obj : end_obj + 1])
+        if start_arr != -1 and end_arr > start_arr:
+            candidates.append(stripped[start_arr : end_arr + 1])
+
+        for candidate in candidates:
+            candidate = candidate.strip()
+            if candidate:
+                return candidate
+        return None
+
+    def _normalize_payload(self, payload: Dict[str, object]) -> Optional[Dict[str, object]]:
+        """Coerce malformed responses into the expected schema when possible."""
+
+        if not isinstance(payload, dict):
+            self.logger.debug("[%s] Payload is not an object: %r", self.model, payload)
+            return None
+
+        normalized: Dict[str, object] = {}
+        missing_keys = []
+
+        for key in self.REQUIRED_KEYS:
+            value = payload.get(key)
+            if key in self.LIST_KEYS:
+                coerced_list, replaced = self._coerce_to_list(value, key)
+                normalized[key] = coerced_list
+            else:
+                coerced_value, replaced = self._coerce_to_string(value)
+                normalized[key] = coerced_value
+
+            if replaced:
+                missing_keys.append(key)
+
+        if missing_keys:
+            self.logger.debug(
+                "[%s] Filled missing keys with defaults: %s",
+                self.model,
+                ", ".join(sorted(missing_keys)),
+            )
+
+        # Preserve any extra keys the model might return.
+        for key, value in payload.items():
+            if key not in normalized:
+                normalized[key] = value
+
+        # Final validation to ensure critical fields are non-empty.
+        required_strings = {key for key in self.REQUIRED_KEYS if key not in self.LIST_KEYS}
+        for key in required_strings:
+            if not isinstance(normalized.get(key), str):
+                self.logger.debug(
+                    "[%s] Key '%s' could not be coerced to string.",
+                    self.model,
+                    key,
+                )
+                return None
 
         for key in self.LIST_KEYS:
-            value = payload.get(key)
-            if not isinstance(value, list):
-                self.logger.debug("[%s] Key '%s' should be a list.", self.model, key)
-                return False
-            if not all(isinstance(item, str) for item in value):
-                self.logger.debug("[%s] Key '%s' contains non-string items.", self.model, key)
-                return False
+            if not isinstance(normalized.get(key), list):
+                self.logger.debug(
+                    "[%s] Key '%s' could not be coerced to list.",
+                    self.model,
+                    key,
+                )
+                return None
 
-        return True
+        return normalized
+
+    def _normalise_prompt_section(self, section: str) -> str:
+        if not isinstance(section, str):
+            return ""
+        return section.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    def _coerce_to_string(self, value) -> Tuple[str, bool]:
+        replaced = False
+        if value is None:
+            return "", True
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                replaced = True
+            return stripped, replaced
+        if isinstance(value, (int, float)):
+            return str(value), False
+        text = str(value).strip()
+        if not text:
+            replaced = True
+        return text, replaced
+
+    def _coerce_to_list(self, value, key: str) -> Tuple[List[str], bool]:
+        replaced = False
+        if value is None:
+            return [], True
+        if isinstance(value, list):
+            cleaned = []
+            for item in value:
+                coerced, item_replaced = self._coerce_to_string(item)
+                if coerced:
+                    cleaned.append(coerced)
+                replaced = replaced or item_replaced
+            return cleaned, replaced
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return [], True
+            parts = [part.strip() for part in re.split(r"[,;\n]+", stripped) if part.strip()]
+            if parts:
+                self.logger.debug(
+                    "[%s] Coerced string to list for key '%s': %s",
+                    self.model,
+                    key,
+                    parts,
+                )
+            else:
+                replaced = True
+            return parts, replaced
+        if isinstance(value, (int, float)):
+            return [str(value)], False
+        coerced, item_replaced = self._coerce_to_string(value)
+        return ([coerced] if coerced else []), item_replaced

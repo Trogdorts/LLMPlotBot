@@ -23,7 +23,8 @@ class Worker(threading.Thread):
         self.logger = logger
 
     def run(self):
-        self.logger.info("Worker thread started.")
+        """Process incoming batches until shutdown."""
+        self.logger.debug("Worker thread started.")
         self.logger.debug(f"Active connectors: {list(self.connectors.keys())}")
 
         while not self.shutdown_event.is_set():
@@ -32,14 +33,13 @@ class Worker(threading.Thread):
             except queue.Empty:
                 continue
 
-            # --- SAFETY GUARD: Skip empty batches ---
             if not batch:
                 self.logger.debug("Received empty batch; skipping.")
                 self.batch_q.task_done()
                 continue
 
             model = batch[0].model
-            self.logger.info(f"Processing batch of {len(batch)} task(s) for model={model}.")
+            self.logger.debug(f"Processing batch of {len(batch)} task(s) for model={model}.")
 
             connector = self.connectors.get(model)
             if not connector:
@@ -61,7 +61,6 @@ class Worker(threading.Thread):
                 if task is None:
                     continue
                 if response:
-                    # Preserve the original headline (title)
                     if isinstance(response, dict):
                         response["title"] = task.title
                     self.writer.write(task.id, task.model, task.prompt_hash, response)
@@ -70,4 +69,4 @@ class Worker(threading.Thread):
 
             self.batch_q.task_done()
 
-        self.logger.info("Worker thread exiting.")
+        self.logger.debug("Worker thread exiting.")

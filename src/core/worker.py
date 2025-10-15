@@ -39,11 +39,7 @@ class Worker(threading.Thread):
                 continue
 
             model = batch[0].model
-            self.logger.debug(
-                "Processing batch of %s task(s) for model=%s.",
-                len(batch),
-                model,
-            )
+            self.logger.info(f"Processing batch of {len(batch)} task(s) for model={model}.")
 
             connector = self.connectors.get(model)
             if not connector:
@@ -58,10 +54,7 @@ class Worker(threading.Thread):
                     f"Model {model} returned {len(responses)} response(s) for {len(batch)} task(s); padding missing entries."
                 )
             self.logger.debug(
-                "Worker got %s/%s valid responses for model=%s",
-                received,
-                len(batch),
-                model,
+                f"Worker got {received}/{len(batch)} valid responses for model={model}"
             )
 
             for task, response in zip_longest(batch, responses, fillvalue=None):

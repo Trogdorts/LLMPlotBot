@@ -49,6 +49,11 @@ class ModelConnector:
         pretty_payload = json.dumps(payload, ensure_ascii=False, indent=2)
 
         # --- outbound ---
+        self.logger.debug(
+            "Dispatching HTTP request for model=%s with %s task(s).",
+            self.model,
+            len(batch),
+        )
         self.logger.debug(f"SEND → {compact_payload}")
 
         try:
@@ -79,7 +84,14 @@ class ModelConnector:
                 print(f"[ERROR] {self.model} JSON parse error: {e}")
                 return [None] * len(batch)
 
-            return self._parse_batch_response(data, len(batch))
+            parsed = self._parse_batch_response(data, len(batch))
+            self.logger.debug(
+                "Model %s request completed with %s/%s valid responses.",
+                self.model,
+                len([r for r in parsed if r]) if parsed else 0,
+                len(parsed),
+            )
+            return parsed
 
         except Exception as e:
             msg = f"[{self.model}] batch error: {e}"
@@ -159,6 +171,8 @@ class ModelConnector:
         Extract and repair JSON array returned by the model.
         Only returns a fully valid parsed object; never writes failed output.
         """
+        results = [None] * count
+
         try:
             if isinstance(data, dict) and "choices" in data:
                 text = data["choices"][0]["message"]["content"].strip()
@@ -167,16 +181,24 @@ class ModelConnector:
                 parsed = self._repair_and_parse_json(text)
                 if not parsed:
                     self.logger.error(f"[{self.model}] Unable to recover valid JSON after repair.")
-                    return [None] * count
+                    return results
 
                 # sanity check
                 if isinstance(parsed, dict):
-                    return [parsed] * count
+                    for i in range(count):
+                        results[i] = parsed
+                    return results
                 if isinstance(parsed, list):
                     valid_objs = [obj for obj in parsed if isinstance(obj, dict)]
                     if valid_objs:
-                        return valid_objs
+                        for idx, obj in enumerate(valid_objs[:count]):
+                            results[idx] = obj
+                        if len(valid_objs) < count:
+                            self.logger.warning(
+                                f"[{self.model}] Parsed {len(valid_objs)} item(s) for {count} task(s); remaining entries will be None."
+                            )
+                        return results
         except Exception as e:
             self.logger.error(f"[{self.model}] Unexpected parse error: {e}")
 
-        return [None] * count
+        return results

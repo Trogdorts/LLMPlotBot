@@ -24,7 +24,7 @@ class BatchManager(threading.Thread):
         self.last_flush = defaultdict(lambda: time.time())
 
     def run(self):
-        self.logger.debug("BatchManager started.")
+        self.logger.info("BatchManager thread started.")
         while not self.shutdown_event.is_set():
             try:
                 task = self.in_q.get(timeout=0.5)
@@ -35,9 +35,16 @@ class BatchManager(threading.Thread):
             self.logger.debug(f"Received task id={task.id} model={task.model}")
             key = (task.model, task.prompt_hash)
             self.buffer[key].append(task)
+            self.logger.debug(
+                "Queued task %s for model=%s; batch size now %s/%s",
+                task.id,
+                task.model,
+                len(self.buffer[key]),
+                self.batch_size,
+            )
 
             if len(self.buffer[key]) >= self.batch_size:
-                self.logger.debug(f"Buffer full for {key}, flushing batch.")
+                self.logger.debug("Batch size threshold reached for %s; flushing now.", key)
                 self._flush_batch(key)
 
             self._flush_expired()
@@ -45,18 +52,28 @@ class BatchManager(threading.Thread):
         # Flush remaining batches on shutdown
         for key in list(self.buffer.keys()):
             self._flush_batch(key)
+        self.logger.info("BatchManager thread exiting.")
 
     def _flush_expired(self):
         now = time.time()
         for key, last in list(self.last_flush.items()):
             if now - last > self.timeout and self.buffer[key]:
-                self.logger.debug(f"Time-based flush for {key} size={len(self.buffer[key])}")
+                self.logger.debug(
+                    "Timeout reached for %s; flushing %s task(s).",
+                    key,
+                    len(self.buffer[key]),
+                )
                 self._flush_batch(key)
 
     def _flush_batch(self, key):
         batch = self.buffer.pop(key)
         self.last_flush[key] = time.time()
-        self.logger.debug(f"Sending batch {key} size={len(batch)} to out_q")
+        self.logger.info(
+            "Dispatching batch for model=%s hash=%s size=%s",
+            key[0],
+            key[1],
+            len(batch),
+        )
         self.out_q.put(batch)
         self.logger.debug(f"Flushing batch for {key[0]} (model) hash={key[1]} size={len(batch)}")
 

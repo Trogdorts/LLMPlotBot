@@ -25,26 +25,39 @@ from src.core.shutdown import ShutdownManager
 
 # ------------------------------------------------------------------
 def resolve_model_endpoints(config, logger):
-    """Populate CONFIG["LLM_ENDPOINTS"] using configured or active LM Studio models."""
+    """Return the endpoint map based on explicit config or running LM Studio models."""
+
+    # Respect pre-configured endpoint mappings when provided.
+    preconfigured = config.get("LLM_ENDPOINTS") or {}
+    if preconfigured:
+        logger.info(
+            "Using pre-configured LLM endpoints for %s model(s).",
+            len(preconfigured),
+        )
+        logger.debug("Pre-configured endpoints: %s", preconfigured)
+        return dict(preconfigured)
 
     base_url = config.get("LLM_BASE_URL", "http://localhost:1234")
-    configured_models = [m.strip() for m in config.get("LLM_MODELS", []) if m.strip()]
+
+    configured_models = config.get("LLM_MODELS", [])
+    if isinstance(configured_models, str):
+        configured_models = [m.strip() for m in configured_models.split(",")]
+    configured_models = [m.strip() for m in configured_models if m and m.strip()]
 
     if configured_models:
+        logger.info("Using explicitly configured LLM models: %s", ", ".join(configured_models))
         models = configured_models
-        logger.info("Using explicitly configured LLM models: %s", ", ".join(models))
     else:
         models = get_model_keys(logger)
         if models:
             logger.info("Detected running LM Studio models: %s", ", ".join(models))
         else:
             logger.error("No running LM Studio models detected and no models configured.")
-            return config
+            return {}
 
     endpoints = {model: f"{base_url}/v1/chat/completions" for model in models}
-    config["LLM_ENDPOINTS"] = endpoints
     logger.debug("Resolved LLM endpoints: %s", endpoints)
-    return config
+    return endpoints
 
 
 # ------------------------------------------------------------------
@@ -54,7 +67,7 @@ def main():
     logger.info("=== LLM Batch Processor Starting ===")
 
     # ---------- Auto-detect and register LLM models ----------
-    CONFIG.update(resolve_model_endpoints(CONFIG, logger))
+    CONFIG["LLM_ENDPOINTS"] = resolve_model_endpoints(CONFIG, logger)
 
     if not CONFIG["LLM_ENDPOINTS"]:
         logger.error("No LLM endpoints available. Exiting.")

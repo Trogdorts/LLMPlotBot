@@ -1,0 +1,24 @@
+
+"""
+Central configuration for the LLM batch processor.
+All paths are relative to the project root when running main.py.
+"""
+
+CONFIG = {
+    "BASE_DIR": "./data",
+    "BACKUP_DIR": "./backups",
+    "LOG_DIR": "./logs",
+    "GENERATED_DIR": "./data/generated_data",
+    "IGNORE_FOLDERS": ["backups", ".venv", "__pycache__", "logs"],
+    "TEST_MODE": True,                # True = process one batch then exit
+    "TEST_BATCHES": 5,
+    "BATCH_SIZE": 8,                  # headlines per request to an LLM
+    "NUM_WORKERS": 8,                 # worker threads consuming batches
+    "BATCH_TIMEOUT": 2.0,             # seconds to flush partial batch
+    "RETRY_LIMIT": 3,                 # per-task retry cap
+    "REQUEST_TIMEOUT": 90,            # seconds for LLM HTTP request
+    "LLM_ENDPOINTS": {
+        # Model name -> endpoint URL
+        "creative-writing-model": "http://localhost:1234/v1/chat/completions"
+    }
+}

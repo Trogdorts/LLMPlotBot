@@ -1,88 +1,170 @@
-"""
-ModelConnector
-==============
-Handles all HTTP interactions with LLM endpoints.
-Console → pretty-printed JSON
-logs/debug.log → compact single-line JSON
-Cleans prompt text and uses aggressive JSON recovery.
-"""
+"""Model connector for sequential task execution with persistent sessions."""
 
 import json
 import re
+from typing import Dict, List, Optional, Tuple
+
 import requests
-from typing import List
-from .task import Task
 
 
 def clean_prompt_text(text: str) -> str:
     """Remove newlines, tabs, carriage returns, and repeated spaces."""
     if not isinstance(text, str):
         return text
-    text = re.sub(r'[\n\r\t]+', ' ', text)
-    text = re.sub(r'\s{2,}', ' ', text)
+    text = re.sub(r"[\n\r\t]+", " ", text)
+    text = re.sub(r"\s{2,}", " ", text)
     return text.strip()
 
 
 class ModelConnector:
-    """Blocking HTTP client for one LLM endpoint."""
+    """Blocking HTTP client that maintains one persistent chat session per model."""
+
+    JSON_ONLY_INSTRUCTION = "Return only the JSON object described. No extra text."
+
+    REQUIRED_KEYS = {
+        "id",
+        "core_event",
+        "themes",
+        "tone",
+        "conflict_type",
+        "stakes",
+        "setting_hint",
+        "characters",
+        "potential_story_hooks",
+    }
+
+    LIST_KEYS = {"themes", "characters", "potential_story_hooks"}
 
     def __init__(self, model: str, url: str, request_timeout: int, logger):
         self.model = model
         self.url = url
         self.request_timeout = request_timeout
         self.logger = logger
+        self._session_messages: List[Dict[str, str]] = []
+        self._history: List[Dict[str, str]] = []
+        self._active = False
+        self._headline_counter = 0
 
-    def send_batch(self, batch: List[Task]):
-        """Send a batch and return parsed JSON results."""
-        user_content = clean_prompt_text(self._build_prompt(batch))
+    # ------------------------------------------------------------------
+    def start_session(self, prompt_text: str) -> None:
+        """Initialise the persistent message history for this model."""
+        self.logger.info("Starting session for model %s", self.model)
+        cleaned_prompt = clean_prompt_text(prompt_text)
+        self._session_messages = [
+            {"role": "system", "content": self.JSON_ONLY_INSTRUCTION},
+            {"role": "user", "content": cleaned_prompt},
+        ]
+        self._history = []
+        self._active = True
+        self._headline_counter = 0
+
+    def close_session(self) -> None:
+        """Reset internal session state."""
+        if self._active:
+            self.logger.info("Closing session for model %s", self.model)
+        self._session_messages = []
+        self._history = []
+        self._headline_counter = 0
+        self._active = False
+
+    # ------------------------------------------------------------------
+    def send_headline(self, headline: str) -> Optional[Dict[str, object]]:
+        """Send one headline to the model and return the validated JSON payload."""
+        if not self._active:
+            raise RuntimeError("Session has not been started. Call start_session() first.")
+
+        headline_text = self._format_headline(headline)
+        user_message = {"role": "user", "content": headline_text}
+        messages = self._session_messages + self._history + [user_message]
 
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": "Return only the JSON object described. No extra text."},
-                {"role": "user", "content": user_content},
-            ],
+            "messages": messages,
             "stream": False,
         }
 
         compact_payload = json.dumps(payload, ensure_ascii=False)
-        self.logger.debug(f"Dispatching HTTP request for model={self.model} with {len(batch)} task(s).")
-        self.logger.debug(f"SEND → {compact_payload}")
+        self.logger.debug(
+            "Dispatching HTTP request for model=%s with headline #%s",
+            self.model,
+            self._headline_counter + 1,
+        )
+        self.logger.debug("SEND → %s", compact_payload)
 
         try:
-            r = requests.post(self.url, json=payload, timeout=self.request_timeout)
-            r.raise_for_status()
-            raw_text = r.text.strip()
+            response = requests.post(self.url, json=payload, timeout=self.request_timeout)
+            response.raise_for_status()
+        except Exception as exc:
+            self.logger.error("[%s] HTTP error: %s", self.model, exc)
+            return None
 
-            compact_response = raw_text.replace("\n", "").replace("  ", " ")
-            self.logger.debug(f"RECV ← {compact_response}")
+        raw_text = response.text.strip()
+        compact_response = raw_text.replace("\n", " ").replace("  ", " ")
+        self.logger.debug("RECV ← %s", compact_response)
 
-            try:
-                data = json.loads(raw_text)
-            except Exception as e:
-                self.logger.error(f"[{self.model}] JSON parse error: {e}")
-                return [None] * len(batch)
+        parsed_response, content_text = self._extract_first_object(raw_text)
+        if not parsed_response:
+            self.logger.error("[%s] Failed to parse valid JSON object.", self.model)
+            return None
 
-            parsed = self._parse_batch_response(data, len(batch))
-            ok = len([p for p in parsed if p])
-            self.logger.info(
-                f"Model {self.model} request completed with {ok}/{len(batch)} valid responses."
-            )
-            return parsed
+        if not self._validate_schema(parsed_response):
+            self.logger.error("[%s] Response failed schema validation.", self.model)
+            return None
 
-        except Exception as e:
-            msg = f"[{self.model}] batch error: {e}"
-            self.logger.error(msg)
-            return [None] * len(batch)
+        # Persist successful interaction in the conversation history.
+        self._history.extend([user_message, {"role": "assistant", "content": content_text}])
+        self._headline_counter += 1
 
-    def _build_prompt(self, batch: List[Task]) -> str:
-        """Combine all headlines into one batch prompt."""
-        prompt_text = batch[0].prompt_text
-        lines = [f"{i + 1}. {t.title}" for i, t in enumerate(batch)]
-        return f"{prompt_text}\n\nHeadlines:\n" + "\n".join(lines)
+        return parsed_response
+
+    # ------------------------------------------------------------------
+    def reinforce_compliance(self) -> None:
+        """Reinforce the JSON-only instruction before retrying a headline."""
+        if not self._active:
+            return
+        reminder = {"role": "user", "content": self.JSON_ONLY_INSTRUCTION}
+        self._history.append(reminder)
+        self.logger.warning("[%s] Re-sent JSON compliance instruction.", self.model)
+
+    # ------------------------------------------------------------------
+    def _format_headline(self, headline: str) -> str:
+        index = self._headline_counter + 1
+        return f"{index}. {clean_prompt_text(headline)}"
+
+    def _extract_first_object(self, raw_text: str) -> Tuple[Optional[Dict[str, object]], str]:
+        """Extract the first JSON object from the model response."""
+        try:
+            payload = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            self.logger.debug("[%s] Top-level JSON parse failed: %s", self.model, exc)
+            return None, ""
+
+        try:
+            content = payload["choices"][0]["message"]["content"].strip()
+        except Exception as exc:
+            self.logger.error("[%s] Unexpected response envelope: %s", self.model, exc)
+            return None, ""
+
+        self.logger.debug("PARSING JSON OBJECT → %s", content[:500])
+        repaired = self._repair_and_parse_json(content)
+
+        if isinstance(repaired, dict):
+            return repaired, content
+
+        if isinstance(repaired, list):
+            dict_items = [item for item in repaired if isinstance(item, dict)]
+            if dict_items:
+                if len(dict_items) > 1:
+                    self.logger.warning(
+                        "[%s] Received array with %s objects; using the first entry.",
+                        self.model,
+                        len(dict_items),
+                    )
+                return dict_items[0], content
+
+        return None, content
 
     def _repair_and_parse_json(self, text: str):
-        """Attempt layered JSON repair and return valid parsed structure or None."""
         original = text.strip()
         text = re.sub(r"[\n\r\t]+", " ", original)
         text = re.sub(r"\s{2,}", " ", text)
@@ -100,46 +182,37 @@ class ModelConnector:
 
         try:
             if text.strip().startswith("{") and text.strip().endswith("}"):
-                return [json.loads(text)]
+                return json.loads(text)
         except Exception:
             pass
 
         objs = re.findall(r"\{[^{}]*\}", original)
         result = []
-        for o in objs:
+        for obj_text in objs:
             try:
-                result.append(json.loads(o))
+                result.append(json.loads(obj_text))
             except Exception:
                 continue
         return result if result else None
 
-    def _parse_batch_response(self, data, count: int):
-        """Extract and repair JSON array returned by the model."""
-        results = [None] * count
-        try:
-            if isinstance(data, dict) and "choices" in data:
-                text = data["choices"][0]["message"]["content"].strip()
-                self.logger.debug(f"PARSING JSON ARRAY → {text[:500]}...")
-                parsed = self._repair_and_parse_json(text)
-                if not parsed:
-                    self.logger.error(f"[{self.model}] Unable to recover valid JSON after repair.")
-                    return results
+    def _validate_schema(self, payload: Dict[str, object]) -> bool:
+        missing = self.REQUIRED_KEYS - payload.keys()
+        if missing:
+            self.logger.debug("[%s] Missing keys: %s", self.model, ", ".join(sorted(missing)))
+            return False
 
-                if isinstance(parsed, dict):
-                    for i in range(count):
-                        results[i] = parsed
-                    return results
+        for key in self.REQUIRED_KEYS - self.LIST_KEYS:
+            if not isinstance(payload.get(key), str):
+                self.logger.debug("[%s] Key '%s' should be a string.", self.model, key)
+                return False
 
-                if isinstance(parsed, list):
-                    valid_objs = [obj for obj in parsed if isinstance(obj, dict)]
-                    if valid_objs:
-                        for idx, obj in enumerate(valid_objs[:count]):
-                            results[idx] = obj
-                        if len(valid_objs) < count:
-                            self.logger.warning(
-                                f"[{self.model}] Parsed {len(valid_objs)} item(s) for {count} task(s); remaining entries will be None."
-                            )
-                        return results
-        except Exception as e:
-            self.logger.error(f"[{self.model}] Unexpected parse error: {e}")
-        return results
+        for key in self.LIST_KEYS:
+            value = payload.get(key)
+            if not isinstance(value, list):
+                self.logger.debug("[%s] Key '%s' should be a list.", self.model, key)
+                return False
+            if not all(isinstance(item, str) for item in value):
+                self.logger.debug("[%s] Key '%s' contains non-string items.", self.model, key)
+                return False
+
+        return True

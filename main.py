@@ -1,26 +1,20 @@
-"""
-Main orchestrator for the LLM batch processor.
-Handles backups, prompt loading, task generation, batching, workers, and graceful shutdown.
-Uses utils_io.py for title indexing and caching.
-"""
+"""Main entry point for sequential headline processing via persistent LLM sessions."""
 
-import os
-import time
-import queue
-import threading
 import logging
+import os
+import threading
+
 from src.config import CONFIG
-from src.util.logger_setup import setup_logger
-from src.util.backup_utils import create_backup
-from src.util.prompt_utils import load_and_archive_prompt
-from src.util.utils_io import load_cache, build_cache
-from src.util.lmstudio_models import get_model_keys
-from src.core.task import Task
-from src.core.batch_manager import BatchManager
-from src.core.worker import Worker
-from src.core.writer import ResultWriter
 from src.core.model_connector import ModelConnector
 from src.core.shutdown import ShutdownManager
+from src.core.task import Task
+from src.core.task_runner import TaskRunner
+from src.core.writer import ResultWriter
+from src.util.backup_utils import create_backup
+from src.util.lmstudio_models import get_model_keys
+from src.util.logger_setup import setup_logger
+from src.util.prompt_utils import load_and_archive_prompt
+from src.util.utils_io import build_cache, load_cache
 
 
 # ------------------------------------------------------------------
@@ -64,7 +58,7 @@ def resolve_model_endpoints(config, logger):
 def main():
     # ---------- Initialize logging ----------
     logger = setup_logger(CONFIG["LOG_DIR"], logging.INFO)
-    logger.info("=== LLM Batch Processor Starting ===")
+    logger.info("=== LLM Sequential Processor Starting ===")
 
     # ---------- Auto-detect and register LLM models ----------
     CONFIG["LLM_ENDPOINTS"] = resolve_model_endpoints(CONFIG, logger)
@@ -97,75 +91,56 @@ def main():
     writer = ResultWriter(CONFIG["GENERATED_DIR"], logger=logger)
     ShutdownManager(shutdown_event, writer, logger).register()
 
-    # ---------- Generate tasks ----------
-    logger.info("Preparing task queues.")
-    task_q, batch_q = queue.Queue(), queue.Queue()
-
+    # ---------- Prepare task lists ----------
     title_items = list(titles.items())
     if CONFIG["TEST_MODE"]:
-        per_model_limit = CONFIG["BATCH_SIZE"] * CONFIG["TEST_BATCHES"]
-        title_items = title_items[:per_model_limit]
-        logger.info(
-            "TEST_MODE enabled: limiting to %s task(s) per model across %s model(s).",
-            per_model_limit,
-            len(CONFIG["LLM_ENDPOINTS"]),
-        )
+        limit = CONFIG.get("TEST_LIMIT_PER_MODEL")
+        if limit:
+            title_items = title_items[:limit]
+            logger.info(
+                "TEST_MODE enabled: limiting to %s headline(s) per model.",
+                limit,
+            )
 
-    total_tasks = 0
-    for model in CONFIG["LLM_ENDPOINTS"]:
-        for tid, info in title_items:
-            task_q.put(Task(tid, info["title"], model, prompt_hash, prompt_text))
-            total_tasks += 1
-
-    logger.info(
-        "Queued %s task(s) spanning %s model(s).",
-        total_tasks,
-        len(CONFIG["LLM_ENDPOINTS"]),
-    )
-
-    # ---------- Initialize model connectors ----------
     connectors = {
-        m: ModelConnector(m, u, CONFIG["REQUEST_TIMEOUT"], logger)
-        for m, u in CONFIG["LLM_ENDPOINTS"].items()
+        model: ModelConnector(model, url, CONFIG["REQUEST_TIMEOUT"], logger)
+        for model, url in CONFIG["LLM_ENDPOINTS"].items()
     }
-
     logger.info("Initialized %s connector(s).", len(connectors))
 
-    # ---------- Start batch manager & worker threads ----------
-    bm = BatchManager(task_q, batch_q, shutdown_event, CONFIG, logger)
-    bm.start()
+    tasks_by_model = {model: [] for model in connectors}
+    for model in connectors:
+        for tid, info in title_items:
+            tasks_by_model[model].append(
+                Task(tid, info["title"], model, prompt_hash, prompt_text)
+            )
 
-    workers = [
-        Worker(batch_q, writer, connectors, shutdown_event, logger)
-        for _ in range(CONFIG["NUM_WORKERS"])
-    ]
-    for w in workers:
-        w.start()
+    total_tasks = sum(len(items) for items in tasks_by_model.values())
+    logger.info(
+        "Prepared %s task(s) spanning %s model(s).",
+        total_tasks,
+        len(tasks_by_model),
+    )
 
-    # ---------- Main control loop ----------
+    runner = TaskRunner(
+        tasks_by_model,
+        connectors,
+        writer,
+        CONFIG["RETRY_LIMIT"],
+        shutdown_event,
+        logger,
+    )
+
     try:
-        if CONFIG["TEST_MODE"]:
-            logger.info("Running in TEST_MODE: processing one batch then exit...")
-            while not shutdown_event.is_set():
-                logger.debug(f"task_q={task_q.qsize()} batch_q={batch_q.qsize()}")
-                time.sleep(2)
-                if task_q.empty() and batch_q.empty():
-                    logger.debug("Queues empty; ending test run.")
-                    shutdown_event.set()
-        else:
-            while not shutdown_event.is_set():
-                logger.debug(f"task_q={task_q.qsize()} batch_q={batch_q.qsize()}")
-                time.sleep(2)
+        runner.run()
     except KeyboardInterrupt:
         logger.warning("KeyboardInterrupt detected. Initiating shutdown...")
         shutdown_event.set()
-
-    # ---------- Graceful shutdown ----------
-    bm.join()
-    for w in workers:
-        w.join()
-    writer.flush()
-    logger.info("=== Shutdown complete ===")
+    finally:
+        for connector in connectors.values():
+            connector.close_session()
+        writer.flush()
+        logger.info("=== Shutdown complete ===")
 
 
 # ------------------------------------------------------------------

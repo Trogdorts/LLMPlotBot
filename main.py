@@ -106,22 +106,17 @@ def main():
         per_model_limit = CONFIG["BATCH_SIZE"] * CONFIG["TEST_BATCHES"]
         title_items = title_items[:per_model_limit]
         logger.info(
-            "TEST_MODE enabled: limiting to %s task(s) per model across %s model(s).",
-            per_model_limit,
-            len(CONFIG["LLM_ENDPOINTS"]),
+            f"TEST_MODE enabled: limiting to {per_model_limit} task(s) per model across {len(CONFIG['LLM_ENDPOINTS'])} model(s)."
         )
 
-    total_tasks = 0
     for model in CONFIG["LLM_ENDPOINTS"]:
+        model_count = 0
         for tid, info in title_items:
             task_q.put(Task(tid, info["title"], model, prompt_hash, prompt_text))
-            total_tasks += 1
+            model_count += 1
+        logger.info(f"Queued {model_count} task(s) for model {model}.")
 
-    logger.info(
-        "Queued %s task(s) spanning %s model(s).",
-        total_tasks,
-        len(CONFIG["LLM_ENDPOINTS"]),
-    )
+    logger.info(f"Total tasks queued: {task_q.qsize()}")
 
     # ---------- Initialize model connectors ----------
     connectors = {

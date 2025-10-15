@@ -49,11 +49,7 @@ class ModelConnector:
         pretty_payload = json.dumps(payload, ensure_ascii=False, indent=2)
 
         # --- outbound ---
-        self.logger.debug(
-            "Dispatching HTTP request for model=%s with %s task(s).",
-            self.model,
-            len(batch),
-        )
+        self.logger.info(f"Dispatching HTTP request for model={self.model} with {len(batch)} task(s).")
         self.logger.debug(f"SEND → {compact_payload}")
 
         try:
@@ -85,11 +81,8 @@ class ModelConnector:
                 return [None] * len(batch)
 
             parsed = self._parse_batch_response(data, len(batch))
-            self.logger.debug(
-                "Model %s request completed with %s/%s valid responses.",
-                self.model,
-                len([r for r in parsed if r]) if parsed else 0,
-                len(parsed),
+            self.logger.info(
+                f"Model {self.model} request completed with {len([r for r in parsed if r])}/{len(parsed)} valid responses."
             )
             return parsed
 

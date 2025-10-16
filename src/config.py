@@ -36,6 +36,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "EXPECTED_LANGUAGE": "en",
 }
 
+_CONFIG_DIRNAME = "config"
+_DEFAULT_CONFIG_FILENAME = "default.json"
 _OVERRIDE_FILENAMES = ("config.local.json",)
 _ENV_OVERRIDE = "LLMPLOTBOT_CONFIG"
 
@@ -49,12 +51,41 @@ def _merge_dicts(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, A
     return base
 
 
+def _write_json(path: Path, data: Dict[str, Any]) -> None:
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
 def _load_override(path: Path) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     if not isinstance(data, dict):
         raise ValueError(f"Config override at {path} must contain a JSON object.")
     return data
+
+
+def _ensure_default_config(
+    config_dir: Path, defaults: Dict[str, Any]
+) -> Tuple[Path, Dict[str, Any]]:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    default_path = config_dir / _DEFAULT_CONFIG_FILENAME
+    base_defaults = deepcopy(defaults)
+
+    if default_path.exists():
+        try:
+            stored = _load_override(default_path)
+        except Exception as exc:  # pragma: no cover - defensive error enrichment
+            raise ValueError(
+                f"Unable to load default configuration from {default_path}: {exc}"
+            ) from exc
+        merged = _merge_dicts(base_defaults, stored)
+        if merged != stored:
+            _write_json(default_path, merged)
+        return default_path, merged
+
+    _write_json(default_path, base_defaults)
+    return default_path, base_defaults
 
 
 def load_config(
@@ -68,18 +99,26 @@ def load_config(
     config = deepcopy(defaults or DEFAULT_CONFIG)
     sources: list[str] = []
 
-    search_paths = []
+    project_root = Path(__file__).resolve().parents[1]
+    config_dir = project_root / _CONFIG_DIRNAME
+    default_path, default_values = _ensure_default_config(
+        config_dir, defaults or DEFAULT_CONFIG
+    )
+    config = _merge_dicts(config, default_values)
+    sources.append(default_path.resolve(strict=False).as_posix())
+
+    search_paths: list[str] = []
     if override_paths:
         search_paths.extend(override_paths)
 
-    project_root = Path(__file__).resolve().parents[1]
+    search_paths.extend(str(config_dir / name) for name in _OVERRIDE_FILENAMES)
     search_paths.extend(str(project_root / name) for name in _OVERRIDE_FILENAMES)
 
     env_path = os.getenv(_ENV_OVERRIDE)
     if env_path:
         search_paths.append(env_path)
 
-    seen: set[Path] = set()
+    seen: set[Path] = {default_path.resolve(strict=False)}
     for raw_path in search_paths:
         try:
             candidate = Path(raw_path).expanduser()

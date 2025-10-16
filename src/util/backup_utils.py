@@ -1,12 +1,12 @@
+"""Backup utilities: create timestamped backups of the current working directory."""
 
-"""
-Backup utilities: create timestamped backups of the current working directory.
-"""
 
 import os
 import shutil
 from datetime import datetime
 from typing import List
+
+from .path_utils import normalize_for_logging
 
 
 def create_backup(backup_dir: str, ignore_list: List[str], logger):
@@ -18,7 +18,7 @@ def create_backup(backup_dir: str, ignore_list: List[str], logger):
     dest = os.path.join(backup_dir, f"backup_{ts}")
     os.makedirs(dest, exist_ok=True)
     root = os.getcwd()
-    logger.info(f"Creating backup at {dest}")
+    logger.info("Creating backup at %s", normalize_for_logging(dest, extra_roots=[root]))
 
     for item in os.listdir(root):
         if any(ig.lower() in item.lower() for ig in ignore_list):
@@ -32,5 +32,5 @@ def create_backup(backup_dir: str, ignore_list: List[str], logger):
             else:
                 shutil.copy2(src_path, dst_path)
         except Exception as e:
-            logger.warning(f"Backup skip {item}: {e}")
-    logger.info(f"Backup complete: {dest}")
+            logger.warning("Backup skip %s: %s", item, e)
+    logger.info("Backup complete: %s", normalize_for_logging(dest, extra_roots=[root]))

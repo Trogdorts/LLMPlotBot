@@ -11,6 +11,8 @@ import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from .path_utils import normalize_for_logging
+
 LOCK = threading.Lock()
 
 
@@ -20,7 +22,11 @@ def load_cache(config, logger):
     if os.path.exists(cache_path):
         with open(cache_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        logger.info(f"Loaded {len(data)} cached entries from {cache_path}.")
+        logger.info(
+            "Loaded %s cached entries from %s.",
+            len(data),
+            normalize_for_logging(cache_path),
+        )
         return data
     logger.warning("Cache file not found.")
     return None
@@ -32,7 +38,11 @@ def save_final(data, config, logger):
     with LOCK:
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
-        logger.info(f"Saved {len(data)} entries to {cache_path}")
+        logger.info(
+            "Saved %s entries to %s",
+            len(data),
+            normalize_for_logging(cache_path),
+        )
     gc.collect()
 
 
@@ -56,7 +66,7 @@ def build_cache(config, logger):
     max_workers = config.get("MAX_WORKERS", 4)
     index = {}
     start = datetime.now()
-    logger.info(f"Scanning {json_dir}")
+    logger.info("Scanning %s", normalize_for_logging(json_dir))
 
     json_files = [
         os.path.join(root, name)

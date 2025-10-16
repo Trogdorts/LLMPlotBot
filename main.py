@@ -22,6 +22,7 @@ from src.util.lmstudio_models import (
 )
 from src.util.logger_setup import setup_logger
 from src.util.prompt_utils import load_and_archive_prompt
+from src.util.result_utils import ExistingResultChecker
 from src.util.utils_io import build_cache, load_cache
 
 
@@ -215,6 +216,8 @@ def main():
             buckets[idx % slots].append(item)
         return buckets
 
+    result_checker = ExistingResultChecker(CONFIG["GENERATED_DIR"], logger)
+    skipped_by_model = {}
     tasks_by_model = {}
     for base, models in model_groups.items():
         subsets = _distribute_titles(title_items, len(models))
@@ -226,6 +229,13 @@ def main():
                 base,
             )
         for model, subset in zip(models, subsets):
+            filtered_subset = []
+            for tid, info in subset:
+                if result_checker.has_entry(tid, model, prompt_hash):
+                    skipped_by_model[model] = skipped_by_model.get(model, 0) + 1
+                    continue
+                filtered_subset.append((tid, info))
+
             tasks_by_model[model] = [
                 Task(
                     tid,
@@ -235,8 +245,23 @@ def main():
                     prompt_bundle.dynamic_section,
                     prompt_bundle.formatting_section,
                 )
-                for tid, info in subset
+                for tid, info in filtered_subset
             ]
+
+    total_skipped = sum(skipped_by_model.values())
+    if total_skipped:
+        logger.info(
+            "Skipping %s existing task(s) across %s model(s).",
+            total_skipped,
+            len(skipped_by_model),
+        )
+        for model, count in sorted(skipped_by_model.items()):
+            logger.debug(
+                "Model %s already has %s completed task(s) for prompt %s.",
+                model,
+                count,
+                prompt_hash,
+            )
 
     total_tasks = sum(len(items) for items in tasks_by_model.values())
     logger.info(

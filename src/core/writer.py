@@ -23,6 +23,7 @@ class ResultWriter:
         strategy: str = "immediate",
         flush_interval: int = 50,
         flush_seconds: float = 5.0,
+        flush_retry_limit: int = 3,
         lock_timeout: float = 10.0,
         lock_poll_interval: float = 0.1,
         lock_stale_seconds: float = 300.0,
@@ -33,6 +34,7 @@ class ResultWriter:
         self.strategy = strategy.lower()
         self.flush_interval = max(1, flush_interval)
         self.flush_seconds = max(0.1, flush_seconds)
+        self.flush_retry_limit = max(1, int(flush_retry_limit or 1))
         self.lock_timeout = max(0.1, lock_timeout)
         self.lock_poll_interval = max(0.01, lock_poll_interval)
         self.lock_stale_seconds = max(1.0, lock_stale_seconds)
@@ -82,20 +84,25 @@ class ResultWriter:
         failed: List[Tuple[str, str, str, Dict[str, Any]]] = []
         success_count = 0
 
-        for id, model, prompt_hash, response in pending:
+        grouped: Dict[str, List[Tuple[str, str, str, Dict[str, Any]]]] = {}
+        for item in pending:
+            grouped.setdefault(item[0], []).append(item)
+
+        for id, records in grouped.items():
             try:
-                self._write_one(id, model, prompt_hash, response)
-                success_count += 1
-            except FileLockTimeout as exc:
-                failed.append((id, model, prompt_hash, response))
-                if self.logger:
-                    self.logger.warning(str(exc))
+                written = self._write_batch(id, records)
             except Exception as exc:  # pragma: no cover - defensive
-                failed.append((id, model, prompt_hash, response))
+                failed.extend(records)
                 if self.logger:
                     self.logger.error(
-                        "Failed to write %s for model %s: %s", id, model, exc, exc_info=True
+                        "Failed to persist batch for %s: %s", id, exc, exc_info=True
                     )
+                continue
+
+            if written:
+                success_count += written
+            else:
+                failed.extend(records)
 
         if failed:
             # Requeue failed entries for another attempt on the next flush.
@@ -105,10 +112,44 @@ class ResultWriter:
             if success_count:
                 self.logger.info("Flushed %s result(s) to disk.", success_count)
             if failed:
-                self.logger.warning("Deferred %s result(s) due to file lock contention.", len(failed))
+                self.logger.warning(
+                    "Deferred %s result(s) due to file lock contention or errors.",
+                    len(failed),
+                )
 
     # ------------------------------------------------------------------
-    def _write_one(self, id, model, prompt_hash, response):
+    def _write_batch(
+        self, id: str, records: List[Tuple[str, str, str, Dict[str, Any]]]
+    ) -> int:
+        """Persist a batch of responses for the same identifier atomically."""
+
+        attempts_remaining = self.flush_retry_limit
+        while attempts_remaining > 0:
+            attempts_remaining -= 1
+            try:
+                return self._persist_records(id, records)
+            except FileLockTimeout as exc:
+                if self.logger:
+                    self.logger.warning(str(exc))
+                if attempts_remaining == 0:
+                    return 0
+                # Small backoff before retrying the same file.
+                time.sleep(min(0.5 * (self.flush_retry_limit - attempts_remaining), 2.0))
+            except Exception:
+                if attempts_remaining == 0:
+                    raise
+                if self.logger:
+                    self.logger.warning(
+                        "Retrying batch write for %s due to unexpected error.", id,
+                        exc_info=True,
+                    )
+                time.sleep(min(0.5 * (self.flush_retry_limit - attempts_remaining), 2.0))
+        return 0
+
+    # ------------------------------------------------------------------
+    def _persist_records(
+        self, id: str, records: List[Tuple[str, str, str, Dict[str, Any]]]
+    ) -> int:
         path = self.base / f"{id}.json"
         tmp = path.with_name(path.name + ".tmp")
         lock_path = path.with_name(path.name + ".lock")
@@ -119,7 +160,7 @@ class ResultWriter:
             poll_interval=self.lock_poll_interval,
             stale_seconds=self.lock_stale_seconds,
         ):
-            data = {}
+            data: Dict[str, Any] = {}
 
             if path.exists():
                 try:
@@ -128,14 +169,47 @@ class ResultWriter:
                 except Exception:
                     data = {}
 
-            title = response.get("title", "")
-            data["title"] = title
+            if not isinstance(data, dict):
+                data = {}
 
-            if "title" in response:
-                response = dict(response)
-                response.pop("title")
+            existing_title = data.get("title", "") if isinstance(data, dict) else ""
+            models_section = data.setdefault("llm_models", {})
+            if not isinstance(models_section, dict):
+                models_section = {}
+                data["llm_models"] = models_section
 
-            data.setdefault("llm_models", {}).setdefault(model, {})[prompt_hash] = response
+            written = 0
+            chosen_title = existing_title
+
+            for _, model, prompt_hash, response in records:
+                title = response.get("title", "")
+                if title and not chosen_title:
+                    chosen_title = title
+                elif (
+                    title
+                    and chosen_title
+                    and title != chosen_title
+                    and self.logger is not None
+                ):
+                    self.logger.warning(
+                        "Conflicting titles for %s; keeping existing value '%s'.",
+                        id,
+                        chosen_title,
+                    )
+
+                payload = dict(response)
+                payload.pop("title", None)
+
+                model_entry = models_section.setdefault(model, {})
+                if not isinstance(model_entry, dict):
+                    model_entry = {}
+                    models_section[model] = model_entry
+
+                model_entry[prompt_hash] = payload
+                written += 1
+
+            if chosen_title:
+                data["title"] = chosen_title
 
             with tmp.open("w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -143,5 +217,9 @@ class ResultWriter:
             os.replace(tmp, path)
 
         if self.logger:
-            self.logger.debug("Saved %s (%s) -> %s/%s", id, title, model, prompt_hash)
+            self.logger.debug(
+                "Saved %s batch with %s record(s).", id, len(records)
+            )
+
+        return len(records)
 

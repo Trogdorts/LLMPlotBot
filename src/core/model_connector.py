@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import re
 import string
+import unicodedata
 from collections import OrderedDict
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -38,6 +39,16 @@ class ModelConnector:
     }
 
     LIST_KEYS = {"themes", "characters", "potential_story_hooks"}
+
+    _NON_ASCII_RE = re.compile(r"[^\x00-\x7F]+")
+    _LANGUAGE_REPLACEMENTS = {
+        "狱警": "prison guard",
+        "囚犯": "prisoner",
+        "官员": "official",
+        "凶手": "killer",
+        "监狱": "prison",
+    }
+    _LANGUAGE_PLACEHOLDER = "unknown"
 
     def __init__(
         self,
@@ -172,6 +183,11 @@ class ModelConnector:
                     "[%s] Entry %s failed schema validation.", self.model, entry_number
                 )
                 continue
+
+            if self._language_checker:
+                sanitized = self._ensure_english_payload(normalized)
+                if sanitized is not normalized:
+                    normalized = sanitized
 
             if self._language_checker and not self._validate_language(normalized):
                 self.logger.error(
@@ -396,6 +412,77 @@ class ModelConnector:
                 )
                 return False
         return True
+
+    def _ensure_english_payload(self, payload: Dict[str, object]) -> Dict[str, object]:
+        """Return a payload with non-English segments replaced by safe English text."""
+
+        updated: Dict[str, object] = payload.__class__()
+        changed = False
+
+        for key, value in payload.items():
+            cleaned, mutated = self._sanitize_value_to_english(value)
+            if mutated:
+                changed = True
+            updated[key] = cleaned
+
+        if changed:
+            self.logger.debug("[%s] Sanitized non-English text in response.", self.model)
+        return updated if changed else payload
+
+    def _sanitize_value_to_english(self, value: Any) -> Tuple[Any, bool]:
+        if isinstance(value, str):
+            cleaned = self._sanitize_string_to_english(value)
+            return cleaned, cleaned != value
+        if isinstance(value, list):
+            cleaned_list = []
+            mutated = False
+            for item in value:
+                if isinstance(item, str):
+                    cleaned_item = self._sanitize_string_to_english(item)
+                    if cleaned_item != item:
+                        mutated = True
+                    cleaned_list.append(cleaned_item)
+                else:
+                    cleaned_list.append(item)
+            return cleaned_list, mutated
+        if isinstance(value, dict):
+            cleaned_dict = {}
+            mutated = False
+            for sub_key, sub_value in value.items():
+                cleaned_sub_value, mutated_sub = self._sanitize_value_to_english(sub_value)
+                if mutated_sub:
+                    mutated = True
+                cleaned_dict[sub_key] = cleaned_sub_value
+            return cleaned_dict, mutated
+        return value, False
+
+    def _sanitize_string_to_english(self, text: str) -> str:
+        if not text:
+            return text
+
+        normalized = unicodedata.normalize("NFKC", text)
+        if self._looks_english(normalized):
+            return normalized
+
+        def replace_segment(match: re.Match[str]) -> str:
+            segment = match.group(0)
+            mapped = self._LANGUAGE_REPLACEMENTS.get(segment)
+            if not mapped:
+                mapped_chars = [self._LANGUAGE_REPLACEMENTS.get(char, "") for char in segment]
+                mapped = " ".join(filter(None, mapped_chars)).strip()
+            if not mapped:
+                transliterated = unicodedata.normalize("NFKD", segment).encode(
+                    "ascii", "ignore"
+                ).decode("ascii", "ignore").strip()
+                mapped = transliterated
+            if not mapped:
+                mapped = self._LANGUAGE_PLACEHOLDER
+            return f" {mapped} "
+
+        cleaned = self._NON_ASCII_RE.sub(replace_segment, normalized)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+
+        return cleaned or self._LANGUAGE_PLACEHOLDER
 
     def _looks_english(self, text: str) -> bool:
         if not text:

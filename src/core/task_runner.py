@@ -6,6 +6,8 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from .metrics import RunnerMetrics
+from .metrics_collector import MetricsCollector
+from .metrics_summary import MetricsSummaryReporter
 from .model_connector import ModelConnector
 from .task import Task
 from .writer import ResultWriter
@@ -23,8 +25,9 @@ class TaskRunner:
         shutdown_event: threading.Event,
         logger: logging.Logger,
         *,
-        summary_interval: float = 0.0,
         model_aliases: Optional[Dict[str, str]] = None,
+        metrics_collector: MetricsCollector | None = None,
+        summary_reporter: MetricsSummaryReporter | None = None,
     ) -> None:
         self.tasks_by_model = tasks_by_model
         self.connectors = connectors
@@ -33,9 +36,8 @@ class TaskRunner:
         self.shutdown_event = shutdown_event
         self.logger = logger
         self.model_aliases = model_aliases or {}
-        self._summary_interval = max(0.0, float(summary_interval))
-        self._summary_stop = threading.Event()
-        self._summary_thread: threading.Thread | None = None
+        self.metrics_collector = metrics_collector
+        self.summary_reporter = summary_reporter
 
         total_tasks = sum(len(tasks) for tasks in tasks_by_model.values())
         self._metrics = RunnerMetrics(total_tasks=total_tasks)
@@ -47,8 +49,6 @@ class TaskRunner:
 
         for alias, queued in queued_counts.items():
             self._metrics.ensure_model(alias, queued=queued)
-
-        self._stats_lock = threading.Lock()
 
         def _make_model_stats(queued: int) -> Dict[str, object]:
             return {
@@ -92,6 +92,9 @@ class TaskRunner:
         """Run through all tasks for each model concurrently."""
         threads = []
 
+        with self._stats_lock:
+            self._stats["start_time"] = time.perf_counter()
+
         for model, tasks in self.tasks_by_model.items():
             if self.shutdown_event.is_set():
                 break
@@ -115,6 +118,9 @@ class TaskRunner:
 
         for thread in threads:
             thread.join()
+
+        with self._stats_lock:
+            self._stats["end_time"] = time.perf_counter()
 
         if self.shutdown_event.is_set():
             self.logger.info("Task runner halted due to shutdown signal.")
@@ -164,7 +170,9 @@ class TaskRunner:
             start = time.perf_counter()
             success, attempts = self._run_with_retries(connector, task)
             duration = time.perf_counter() - start
-            self._record_task_metrics(connector.model, success, attempts, duration)
+            self._record_task_metrics(
+                task.id, connector.model, success, attempts, duration
+            )
 
             if success:
                 self.logger.info(
@@ -229,7 +237,9 @@ class TaskRunner:
         return False, attempt
 
     # ------------------------------------------------------------------
-    def _record_task_metrics(self, model: str, success: bool, attempts: int, duration: float) -> None:
+    def _record_task_metrics(
+        self, task_id: str, model: str, success: bool, attempts: int, duration: float
+    ) -> None:
         with self._stats_lock:
             stats = self._stats
             stats["processed"] += 1
@@ -271,6 +281,17 @@ class TaskRunner:
             model_stats["max_attempts"] = max(model_stats["max_attempts"], attempts)
             if attempts > 1:
                 model_stats["retry_tasks"] += 1
+
+        if self.metrics_collector:
+            total_records = self.metrics_collector.record_task(
+                task_id=task_id,
+                model=model_key,
+                latency=duration,
+                success=success,
+                attempts=attempts,
+            )
+            if self.summary_reporter:
+                self.summary_reporter.maybe_report(total_records)
 
     # ------------------------------------------------------------------
     def _record_queue_duration(self, model: str, duration: float) -> None:

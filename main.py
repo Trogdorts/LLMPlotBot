@@ -3,9 +3,12 @@
 import logging
 import os
 import threading
+import time
 from collections import OrderedDict
 
 from src.config import CONFIG, CONFIG_SOURCES
+from src.core.metrics_collector import MetricsCollector
+from src.core.metrics_summary import MetricsSummaryReporter
 from src.core.model_connector import ModelConnector
 from src.core.shutdown import ShutdownManager
 from src.core.task import Task
@@ -148,7 +151,24 @@ def main():
         lock_stale_seconds=CONFIG.get("FILE_LOCK_STALE_SECONDS", 300.0),
         logger=logger,
     )
-    ShutdownManager(shutdown_event, writer, logger).register()
+    metrics_collector = MetricsCollector()
+    summary_task_interval = int(CONFIG.get("METRICS_SUMMARY_TASK_INTERVAL", 0) or 0)
+    summary_time_seconds = float(
+        CONFIG.get(
+            "METRICS_SUMMARY_TIME_SECONDS",
+            CONFIG.get("SUMMARY_INTERVAL", 0.0),
+        )
+        or 0.0
+    )
+    summary_reporter = MetricsSummaryReporter(
+        metrics_collector,
+        logger,
+        CONFIG["LOG_DIR"],
+        summary_every_tasks=summary_task_interval,
+        summary_every_seconds=summary_time_seconds,
+    )
+    summary_reporter.start()
+    ShutdownManager(shutdown_event, writer, logger, summary_reporter=summary_reporter).register()
 
     # ---------- Prepare task lists ----------
     title_items = list(titles.items())
@@ -162,7 +182,6 @@ def main():
             )
 
     compliance_interval = int(CONFIG.get("COMPLIANCE_REMINDER_INTERVAL", 0) or 0)
-    summary_interval = float(CONFIG.get("SUMMARY_INTERVAL", 0.0) or 0.0)
     if compliance_interval > 0:
         logger.info(
             "Automatic JSON compliance reminders every %s headline(s).",
@@ -232,8 +251,9 @@ def main():
         CONFIG["RETRY_LIMIT"],
         shutdown_event,
         logger,
-        summary_interval=summary_interval,
         model_aliases=model_aliases,
+        metrics_collector=metrics_collector,
+        summary_reporter=summary_reporter,
     )
 
     try:
@@ -245,6 +265,9 @@ def main():
         for connector in connectors.values():
             connector.close_session()
         writer.flush()
+        summary_reporter.finalize(
+            reason="normal_exit", session_end_time=time.time()
+        )
         logger.info("=== Shutdown complete ===")
 
 

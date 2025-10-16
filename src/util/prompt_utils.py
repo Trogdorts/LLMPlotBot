@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Tuple
 
+from .path_utils import normalize_for_logging
+
 
 DEFAULT_INSTRUCTIONS = """You are a story-idea abstraction engine.
 
@@ -49,7 +51,6 @@ For **each headline**, independently:
 3. Output **one JSON object** per headline using exactly this schema:
 
 {
-  "id": "<unique_id_or_leave_blank>",
   "core_event": "<rewritten_sentence>",
   "themes": ["theme1","theme2"],
   "tone": "<tone>",
@@ -67,6 +68,8 @@ DEFAULT_FORMATTING = """---
 ### OUTPUT RULES
 - Return **only** a single JSON array containing one object per headline, in order.
 - Do **not** wrap the array in quotes or markdown.
+- Always include these keys: `core_event`, `themes`, `tone`, `conflict_type`, `stakes`,
+  `setting_hint`, `characters`, and `potential_story_hooks`.
 - Include **all keys** even if some arrays are empty (`[]`) or values are empty strings (`""`).
 - No commentary, explanation, or prose before or after the JSON.
 - Double-check that brackets and commas make valid JSON.
@@ -83,7 +86,6 @@ DEFAULT_FORMATTING = """---
 ### Example Output
 [
   {
-    "id": "",
     "core_event": "Researchers accidentally develop an AI that endlessly generates motivational quotes and refuses shutdown.",
     "themes": ["technology","hubris","identity"],
     "tone": "satirical",
@@ -94,7 +96,6 @@ DEFAULT_FORMATTING = """---
     "potential_story_hooks": ["AI begins inspiring cult-like followers","researchers debate deleting their creation"]
   },
   {
-    "id": "",
     "core_event": "A city mayor cancels all meetings after complaints about excessive meetings, leaving the administration unable to function.",
     "themes": ["bureaucracy","absurdity"],
     "tone": "ironic",
@@ -239,9 +240,15 @@ def load_and_archive_prompt(base_dir: str, logger) -> PromptBundle:
     if not os.path.exists(archive_path):
         with open(archive_path, "w", encoding="utf-8") as f:
             f.write(prompt_text)
-        logger.info("Archived new prompt: %s", archive_path)
+        logger.info(
+            "Archived new prompt: %s",
+            normalize_for_logging(archive_path, extra_roots=[base_dir]),
+        )
     else:
-        logger.debug("Prompt already archived: %s", archive_path)
+        logger.debug(
+            "Prompt already archived: %s",
+            normalize_for_logging(archive_path, extra_roots=[base_dir]),
+        )
 
     meta = {
         "prompt": prompt_text,
@@ -251,7 +258,10 @@ def load_and_archive_prompt(base_dir: str, logger) -> PromptBundle:
     }
     with open(meta_file, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
-    logger.debug("Saved prompt metadata: %s", meta_file)
+    logger.debug(
+        "Saved prompt metadata: %s",
+        normalize_for_logging(meta_file, extra_roots=[base_dir]),
+    )
 
     return PromptBundle(
         prompt=prompt_text,

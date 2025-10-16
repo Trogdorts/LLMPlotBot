@@ -27,3 +27,25 @@ behaviour via the following keys in `src/config.py`:
 
 Each result file is updated atomically and keeps a per-model, per-prompt hash of
 the structured data returned by the LLM.
+
+## Configuration and overrides
+
+Defaults live in `src/config.py`. Override any value by creating a
+`config.local.json` file at the project root or by pointing the
+`LLMPLOTBOT_CONFIG` environment variable at another JSON file. Values are merged
+deeply, so you can override just the keys you care about.
+
+- `LLM_BLOCKLIST` removes unwanted models from consideration even if they are
+  running or explicitly listed.
+- `COMPLIANCE_REMINDER_INTERVAL` (0 disables) automatically replays the
+  JSON-compliance reminder after every _N_ headlines to keep long sessions on
+  track.
+
+Active override sources are logged on start-up.
+
+## Runtime metrics
+
+Each run logs a summary with total runtime, success and failure rates, retry
+counts, and per-model averages. Connector-level reminders (manual, automatic,
+and multi-object response warnings) are aggregated in the summary so you can
+spot models that drift off spec.

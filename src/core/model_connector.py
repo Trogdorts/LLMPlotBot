@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -22,7 +23,6 @@ class ModelConnector:
     JSON_ONLY_INSTRUCTION = "Return only the JSON object described. No extra text."
 
     REQUIRED_KEYS = {
-        "id",
         "core_event",
         "themes",
         "tone",
@@ -35,15 +35,26 @@ class ModelConnector:
 
     LIST_KEYS = {"themes", "characters", "potential_story_hooks"}
 
-    def __init__(self, model: str, url: str, request_timeout: int, logger):
+    def __init__(
+        self,
+        model: str,
+        url: str,
+        request_timeout: int,
+        compliance_interval: int,
+        logger,
+    ):
         self.model = model
         self.url = url
         self.request_timeout = request_timeout
         self.logger = logger
+        self.compliance_interval = max(0, int(compliance_interval or 0))
         self._session_messages: List[Dict[str, str]] = []
         self._history: List[Dict[str, str]] = []
         self._active = False
         self._headline_counter = 0
+        self._auto_compliance_reminders = 0
+        self._manual_compliance_reminders = 0
+        self._array_warning_count = 0
 
     # ------------------------------------------------------------------
     def start_session(self, prompt_dynamic: str, prompt_formatting: str) -> None:
@@ -75,6 +86,8 @@ class ModelConnector:
         """Send one headline to the model and return the validated JSON payload."""
         if not self._active:
             raise RuntimeError("Session has not been started. Call start_session() first.")
+
+        self._maybe_send_auto_compliance_reminder()
 
         headline_text = self._format_headline(headline)
         user_message = {"role": "user", "content": headline_text}
@@ -128,6 +141,7 @@ class ModelConnector:
             return
         reminder = {"role": "user", "content": self.JSON_ONLY_INSTRUCTION}
         self._history.append(reminder)
+        self._manual_compliance_reminders += 1
         self.logger.warning("[%s] Re-sent JSON compliance instruction.", self.model)
 
     # ------------------------------------------------------------------
@@ -159,6 +173,7 @@ class ModelConnector:
             dict_items = [item for item in repaired if isinstance(item, dict)]
             if dict_items:
                 if len(dict_items) > 1:
+                    self._array_warning_count += 1
                     self.logger.warning(
                         "[%s] Received array with %s objects; using the first entry.",
                         self.model,
@@ -281,7 +296,12 @@ class ModelConnector:
                 )
                 return None
 
-        return normalized
+        ordered = OrderedDict()
+        if "core_event" in normalized:
+            ordered["core_event"] = normalized.pop("core_event")
+        for key in sorted(normalized):
+            ordered[key] = normalized[key]
+        return ordered
 
     def _normalise_prompt_section(self, section: str) -> str:
         if not isinstance(section, str):
@@ -335,3 +355,28 @@ class ModelConnector:
             return [str(value)], False
         coerced, item_replaced = self._coerce_to_string(value)
         return ([coerced] if coerced else []), item_replaced
+
+    def _maybe_send_auto_compliance_reminder(self) -> None:
+        if not self._active or self.compliance_interval <= 0:
+            return
+        if self._headline_counter and self._headline_counter % self.compliance_interval == 0:
+            reminder = {"role": "user", "content": self.JSON_ONLY_INSTRUCTION}
+            self._history.append(reminder)
+            self._auto_compliance_reminders += 1
+            self.logger.info(
+                "[%s] Automatically re-sent JSON compliance instruction after %s headline(s).",
+                self.model,
+                self._headline_counter,
+            )
+
+    @property
+    def auto_compliance_reminders(self) -> int:
+        return self._auto_compliance_reminders
+
+    @property
+    def manual_compliance_reminders(self) -> int:
+        return self._manual_compliance_reminders
+
+    @property
+    def array_warning_count(self) -> int:
+        return self._array_warning_count

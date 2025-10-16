@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 
-from src.config import CONFIG
+from src.config import CONFIG, CONFIG_SOURCES
 from src.core.model_connector import ModelConnector
 from src.core.shutdown import ShutdownManager
 from src.core.task import Task
@@ -21,35 +21,67 @@ from src.util.utils_io import build_cache, load_cache
 def resolve_model_endpoints(config, logger):
     """Return the endpoint map based on explicit config or running LM Studio models."""
 
-    # Respect pre-configured endpoint mappings when provided.
+    def _normalise_names(raw):
+        if isinstance(raw, str):
+            items = [part.strip() for part in raw.split(",")]
+        elif isinstance(raw, (list, tuple, set)):
+            items = [str(part).strip() for part in raw]
+        else:
+            return []
+        return [item for item in items if item]
+
+    blocklist = {name.lower() for name in _normalise_names(config.get("LLM_BLOCKLIST", []))}
+
     preconfigured = config.get("LLM_ENDPOINTS") or {}
     if preconfigured:
-        logger.info(
-            "Using pre-configured LLM endpoints for %s model(s).",
-            len(preconfigured),
-        )
-        logger.debug("Pre-configured endpoints: %s", preconfigured)
-        return dict(preconfigured)
+        filtered = {
+            model: url
+            for model, url in preconfigured.items()
+            if model and model.lower() not in blocklist
+        }
+        if not filtered:
+            logger.error("All configured LLM endpoints were filtered by LLM_BLOCKLIST.")
+            return {}
+        if len(filtered) != len(preconfigured):
+            removed = sorted(set(preconfigured) - set(filtered))
+            logger.warning(
+                "Excluding %s blocklisted model(s): %s",
+                len(removed),
+                ", ".join(removed),
+            )
+        logger.info("Using pre-configured LLM endpoints for %s model(s).", len(filtered))
+        logger.debug("Pre-configured endpoints: %s", filtered)
+        return filtered
 
     base_url = config.get("LLM_BASE_URL", "http://localhost:1234")
 
-    configured_models = config.get("LLM_MODELS", [])
-    if isinstance(configured_models, str):
-        configured_models = [m.strip() for m in configured_models.split(",")]
-    configured_models = [m.strip() for m in configured_models if m and m.strip()]
+    configured_models = _normalise_names(config.get("LLM_MODELS", []))
 
     if configured_models:
         logger.info("Using explicitly configured LLM models: %s", ", ".join(configured_models))
-        models = configured_models
+        candidate_models = configured_models
     else:
-        models = get_model_keys(logger)
-        if models:
-            logger.info("Detected running LM Studio models: %s", ", ".join(models))
-        else:
+        detected = get_model_keys(logger)
+        if not detected:
             logger.error("No running LM Studio models detected and no models configured.")
             return {}
+        logger.info("Detected running LM Studio models: %s", ", ".join(detected))
+        candidate_models = detected
 
-    endpoints = {model: f"{base_url}/v1/chat/completions" for model in models}
+    filtered_models = [model for model in candidate_models if model.lower() not in blocklist]
+    if not filtered_models:
+        logger.error("No models available after applying LLM_BLOCKLIST filters.")
+        return {}
+
+    removed = sorted(set(candidate_models) - set(filtered_models))
+    if removed:
+        logger.warning(
+            "Excluding %s blocklisted model(s): %s",
+            len(removed),
+            ", ".join(removed),
+        )
+
+    endpoints = {model: f"{base_url}/v1/chat/completions" for model in filtered_models}
     logger.debug("Resolved LLM endpoints: %s", endpoints)
     return endpoints
 
@@ -59,6 +91,10 @@ def main():
     # ---------- Initialize logging ----------
     logger = setup_logger(CONFIG["LOG_DIR"], logging.INFO)
     logger.info("=== LLM Sequential Processor Starting ===")
+    if CONFIG_SOURCES:
+        logger.info("Loaded config overrides from: %s", ", ".join(CONFIG_SOURCES))
+    else:
+        logger.debug("No config override files found; using defaults.")
 
     # ---------- Auto-detect and register LLM models ----------
     CONFIG["LLM_ENDPOINTS"] = resolve_model_endpoints(CONFIG, logger)
@@ -111,8 +147,20 @@ def main():
                 limit,
             )
 
+    compliance_interval = int(CONFIG.get("COMPLIANCE_REMINDER_INTERVAL", 0) or 0)
+    if compliance_interval > 0:
+        logger.info(
+            "Automatic JSON compliance reminders every %s headline(s).",
+            compliance_interval,
+        )
     connectors = {
-        model: ModelConnector(model, url, CONFIG["REQUEST_TIMEOUT"], logger)
+        model: ModelConnector(
+            model,
+            url,
+            CONFIG["REQUEST_TIMEOUT"],
+            compliance_interval,
+            logger,
+        )
         for model, url in CONFIG["LLM_ENDPOINTS"].items()
     }
     logger.info("Initialized %s connector(s).", len(connectors))

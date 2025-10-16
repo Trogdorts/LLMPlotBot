@@ -1,6 +1,7 @@
-"""Task runner that orchestrates per-model execution with rich metrics."""
+"""Task runner that orchestrates per-model execution (now concurrent)."""
 
-from __future__ import annotations
+import threading
+from typing import Dict, List
 
 import threading
 import time
@@ -33,20 +34,47 @@ class TaskRunner:
         self.logger = logger
 
         total_tasks = sum(len(tasks) for tasks in tasks_by_model.values())
-        self._metrics = RunnerMetrics(total_tasks=total_tasks)
-        for model, tasks in tasks_by_model.items():
-            self._metrics.ensure_model(model, queued=len(tasks))
+
+        def _make_model_stats(queued: int) -> Dict[str, object]:
+            return {
+                "queued": queued,
+                "processed": 0,
+                "success": 0,
+                "failed": 0,
+                "duration_sum": 0.0,
+                "max_duration": 0.0,
+                "total_attempts": 0,
+                "max_attempts": 0,
+                "retry_tasks": 0,
+                "queue_duration": 0.0,
+            }
+
+        per_model = {
+            model: _make_model_stats(len(tasks)) for model, tasks in tasks_by_model.items()
+        }
         for model in connectors:
-            self._metrics.ensure_model(model, queued=len(tasks_by_model.get(model, [])))
+            per_model.setdefault(model, _make_model_stats(len(tasks_by_model.get(model, []))))
+
+        self._stats = {
+            "total_tasks": total_tasks,
+            "processed": 0,
+            "success": 0,
+            "failed": 0,
+            "total_duration": 0.0,
+            "max_duration": 0.0,
+            "total_attempts": 0,
+            "max_attempts": 0,
+            "retry_tasks": 0,
+            "start_time": None,
+            "end_time": None,
+            "per_model": per_model,
+        }
         self._stats_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     def run(self) -> None:
         """Run through all tasks for each model concurrently."""
-        threads: List[threading.Thread] = []
-
-        with self._stats_lock:
-            self._metrics.start_time = time.perf_counter()
+        threads = []
 
         for model, tasks in self.tasks_by_model.items():
             if self.shutdown_event.is_set():
@@ -71,9 +99,6 @@ class TaskRunner:
 
         for thread in threads:
             thread.join()
-
-        with self._stats_lock:
-            self._metrics.end_time = time.perf_counter()
 
         if self.shutdown_event.is_set():
             self.logger.info("Task runner halted due to shutdown signal.")
@@ -108,6 +133,30 @@ class TaskRunner:
             connector.close_session()
             duration = time.perf_counter() - queue_start
             self._record_queue_duration(model, duration)
+
+    # ------------------------------------------------------------------
+    def _run_model_queue(self, model: str, tasks: List[Task]) -> None:
+        if self.shutdown_event.is_set():
+            return
+
+        if not tasks:
+            self.logger.debug("No tasks queued for model %s; skipping.", model)
+            return
+
+        connector = self.connectors.get(model)
+        if not connector:
+            self.logger.error("No connector available for model %s", model)
+            return
+
+        connector.start_session(
+            tasks[0].prompt_dynamic,
+            tasks[0].prompt_formatting,
+        )
+
+        try:
+            self._process_model_tasks(connector, tasks)
+        finally:
+            connector.close_session()
 
     # ------------------------------------------------------------------
     def _process_model_tasks(self, connector: ModelConnector, tasks: List[Task]) -> None:
@@ -189,19 +238,73 @@ class TaskRunner:
     # ------------------------------------------------------------------
     def _record_task_metrics(self, model: str, success: bool, attempts: int, duration: float) -> None:
         with self._stats_lock:
-            self._metrics.record_task(
-                model=model, success=success, attempts=attempts, duration=duration
+            stats = self._stats
+            stats["processed"] += 1
+            if success:
+                stats["success"] += 1
+            else:
+                stats["failed"] += 1
+            stats["total_duration"] += duration
+            stats["max_duration"] = max(stats["max_duration"], duration)
+            stats["total_attempts"] += attempts
+            stats["max_attempts"] = max(stats["max_attempts"], attempts)
+            if attempts > 1:
+                stats["retry_tasks"] += 1
+
+            model_stats = stats["per_model"].setdefault(
+                model,
+                {
+                    "queued": 0,
+                    "processed": 0,
+                    "success": 0,
+                    "failed": 0,
+                    "duration_sum": 0.0,
+                    "max_duration": 0.0,
+                    "total_attempts": 0,
+                    "max_attempts": 0,
+                    "retry_tasks": 0,
+                    "queue_duration": 0.0,
+                },
             )
+            model_stats["processed"] += 1
+            if success:
+                model_stats["success"] += 1
+            else:
+                model_stats["failed"] += 1
+            model_stats["duration_sum"] += duration
+            model_stats["max_duration"] = max(model_stats["max_duration"], duration)
+            model_stats["total_attempts"] += attempts
+            model_stats["max_attempts"] = max(model_stats["max_attempts"], attempts)
+            if attempts > 1:
+                model_stats["retry_tasks"] += 1
 
     # ------------------------------------------------------------------
     def _record_queue_duration(self, model: str, duration: float) -> None:
         with self._stats_lock:
-            self._metrics.record_queue_duration(model=model, duration=duration)
+            model_stats = self._stats["per_model"].setdefault(
+                model,
+                {
+                    "queued": 0,
+                    "processed": 0,
+                    "success": 0,
+                    "failed": 0,
+                    "duration_sum": 0.0,
+                    "max_duration": 0.0,
+                    "total_attempts": 0,
+                    "max_attempts": 0,
+                    "retry_tasks": 0,
+                    "queue_duration": 0.0,
+                },
+            )
+            model_stats["queue_duration"] = duration
 
     # ------------------------------------------------------------------
     def _log_summary(self) -> None:
         with self._stats_lock:
-            stats = self._metrics.snapshot()
+            stats = {
+                **self._stats,
+                "per_model": {model: dict(values) for model, values in self._stats["per_model"].items()},
+            }
 
         total_processed = stats["processed"]
         total_time = None

@@ -32,6 +32,17 @@ class TaskRunner:
         self.retry_limit = max(0, retry_limit)
         self.shutdown_event = shutdown_event
         self.logger = logger
+        self._summary_interval = max(0.0, summary_interval)
+        self._summary_stop = threading.Event()
+        self._summary_thread: threading.Thread | None = None
+
+        total_tasks = sum(len(tasks) for tasks in tasks_by_model.values())
+        self._metrics = RunnerMetrics(total_tasks=total_tasks)
+        for model, tasks in tasks_by_model.items():
+            self._metrics.ensure_model(model, queued=len(tasks))
+        for model in connectors:
+            self._metrics.ensure_model(model, queued=len(tasks_by_model.get(model, [])))
+        self._stats_lock = threading.Lock()
 
         total_tasks = sum(len(tasks) for tasks in tasks_by_model.values())
 

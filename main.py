@@ -193,6 +193,7 @@ def main():
         CONFIG["RETRY_LIMIT"],
         shutdown_event,
         logger,
+        summary_interval=summary_interval,
     )
 
     try:

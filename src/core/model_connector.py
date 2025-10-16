@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import string
 from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
@@ -45,12 +46,23 @@ class ModelConnector:
         request_timeout: int,
         compliance_interval: int,
         logger,
+        expected_language: str | None = None,
     ):
         self.model = model
         self.url = url
         self.request_timeout = request_timeout
         self.logger = logger
         self.compliance_interval = max(0, int(compliance_interval or 0))
+        self.expected_language = (expected_language or "").strip().lower()
+        self._language_checker = None
+        if self.expected_language == "en":
+            self._language_checker = self._looks_english
+        elif self.expected_language:
+            self.logger.warning(
+                "[%s] Language '%s' not supported for validation; skipping check.",
+                self.model,
+                self.expected_language,
+            )
         self._session_messages: List[Dict[str, str]] = []
         self._history: List[Dict[str, str]] = []
         # Limit the amount of conversation state retained in memory to avoid
@@ -132,6 +144,14 @@ class ModelConnector:
         normalized = self._normalize_payload(parsed_response)
         if normalized is None:
             self.logger.error("[%s] Response failed schema validation.", self.model)
+            return None
+
+        if self._language_checker and not self._validate_language(normalized):
+            self.logger.error(
+                "[%s] Response failed language validation for '%s'.",
+                self.model,
+                self.expected_language,
+            )
             return None
 
         # Persist successful interaction in the conversation history.
@@ -312,6 +332,47 @@ class ModelConnector:
         for key in sorted(normalized):
             ordered[key] = normalized[key]
         return ordered
+
+    def _validate_language(self, payload: Dict[str, object]) -> bool:
+        if not self._language_checker:
+            return True
+
+        snippets: List[str] = []
+        for value in payload.values():
+            if isinstance(value, str):
+                snippets.append(value)
+            elif isinstance(value, list):
+                snippets.extend(str(item) for item in value if isinstance(item, str))
+
+        for snippet in snippets:
+            if snippet and not self._language_checker(snippet):
+                preview = snippet.strip().splitlines()[0][:80]
+                self.logger.debug(
+                    "[%s] Language check failed for text: %r",
+                    self.model,
+                    preview,
+                )
+                return False
+        return True
+
+    def _looks_english(self, text: str) -> bool:
+        if not text:
+            return True
+
+        alpha_chars = [char for char in text if char.isalpha()]
+        if not alpha_chars:
+            return True
+
+        ascii_alpha = sum(1 for char in alpha_chars if char in string.ascii_letters)
+        ratio = ascii_alpha / len(alpha_chars)
+        if ratio < 0.85:
+            return False
+
+        non_ascii = sum(1 for char in text if not char.isascii())
+        if non_ascii and (non_ascii / len(text)) > 0.2:
+            return False
+
+        return True
 
     def _normalise_prompt_section(self, section: str) -> str:
         if not isinstance(section, str):

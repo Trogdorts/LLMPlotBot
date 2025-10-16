@@ -30,10 +30,13 @@ the structured data returned by the LLM.
 
 ## Configuration and overrides
 
-Defaults live in `src/config.py`. Override any value by creating a
-`config.local.json` file at the project root or by pointing the
-`LLMPLOTBOT_CONFIG` environment variable at another JSON file. Values are merged
-deeply, so you can override just the keys you care about.
+Defaults live in `src/config.py` and are mirrored into `config/default.json` the
+first time the application starts. The loader keeps that file in sync with new
+defaults so you can tweak values without losing upstream changes. Override any
+value by creating a `config/config.local.json` file (preferred), by adding
+`config.local.json` at the project root, or by pointing the `LLMPLOTBOT_CONFIG`
+environment variable at another JSON file. Values are merged deeply, so you can
+override just the keys you care about.
 
 - `LLM_BLOCKLIST` removes unwanted models from consideration even if they are
   running or explicitly listed.

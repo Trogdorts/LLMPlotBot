@@ -2,16 +2,14 @@
 
 ## Prompt authoring workflow
 
-Prompts are now split into two files under `data/`:
+Prompts live in a single `data/prompt.txt` file. The authoring convention keeps
+the human-editable instructions at the top of the file and the non-negotiable
+formatting requirements at the bottom. Separate the sections with a blank line
+to keep the split clear.
 
-- `prompt_instructions.txt` contains the editable guidance for how headlines
-  should be interpreted and which data should be returned.
-- `prompt_formatting.txt` contains the fixed formatting and output compliance
-  requirements that keep responses machine-readable.
-
-The combined prompt is automatically written to `prompt.txt` at runtime and a
-hashed copy is archived in `data/prompts/`. Edit the instructions file to tweak
-behaviour without risking accidental changes to the required formatting rules.
+The runtime keeps `prompt.txt` normalised in this order and archives a hashed
+copy in `data/prompts/`. Update the instruction section directly to change
+behaviour while preserving the formatting rules appended underneath.
 
 ## Result persistence
 

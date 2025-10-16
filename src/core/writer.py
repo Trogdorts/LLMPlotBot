@@ -211,8 +211,18 @@ class ResultWriter:
             if chosen_title:
                 data["title"] = chosen_title
 
+            ordered_data: Dict[str, Any] = {}
+
+            ordered_data["title"] = data.get("title", "")
+            ordered_data["llm_models"] = data.get("llm_models", {})
+
+            for key, value in data.items():
+                if key in {"title", "llm_models"}:
+                    continue
+                ordered_data[key] = value
+
             with tmp.open("w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(ordered_data, f, ensure_ascii=False, indent=2)
                 f.write("\n")
             os.replace(tmp, path)
 

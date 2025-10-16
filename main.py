@@ -173,14 +173,23 @@ def main():
 
     # ---------- Prepare task lists ----------
     title_items = list(titles.items())
+    test_limit_per_model = None
     if CONFIG["TEST_MODE"]:
         limit = CONFIG.get("TEST_LIMIT_PER_MODEL")
         if limit:
-            title_items = title_items[:limit]
-            logger.info(
-                "TEST_MODE enabled: limiting to %s headline(s) per model.",
-                limit,
-            )
+            try:
+                test_limit_per_model = int(limit)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid TEST_LIMIT_PER_MODEL value %r; ignoring per-model limit.",
+                    limit,
+                )
+                test_limit_per_model = None
+            else:
+                logger.info(
+                    "TEST_MODE enabled: limiting to %s headline(s) per model.",
+                    test_limit_per_model,
+                )
 
     compliance_interval = int(CONFIG.get("COMPLIANCE_REMINDER_INTERVAL", 0) or 0)
     if compliance_interval > 0:
@@ -236,7 +245,7 @@ def main():
                     continue
                 filtered_subset.append((tid, info))
 
-            tasks_by_model[model] = [
+            model_tasks = [
                 Task(
                     tid,
                     info["title"],
@@ -247,6 +256,10 @@ def main():
                 )
                 for tid, info in filtered_subset
             ]
+            if test_limit_per_model is not None and len(model_tasks) > test_limit_per_model:
+                model_tasks = model_tasks[:test_limit_per_model]
+
+            tasks_by_model[model] = model_tasks
 
     total_skipped = sum(skipped_by_model.values())
     if total_skipped:

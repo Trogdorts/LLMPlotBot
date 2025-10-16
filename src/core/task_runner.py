@@ -179,6 +179,9 @@ class TaskRunner:
 
         pending: List[Task] = list(tasks)
         states: Dict[str, _TaskAttemptState] = {}
+        max_batch_size = self.batch_size
+        current_batch_size = max_batch_size
+        success_streak = 0
 
         def _finalize(task: Task, success: bool) -> None:
             state = states.pop(task.id, None)
@@ -228,8 +231,9 @@ class TaskRunner:
                 )
                 break
 
-            batch = pending[: self.batch_size]
-            pending = pending[self.batch_size :]
+            batch_size = max(1, min(current_batch_size, len(pending)))
+            batch = pending[:batch_size]
+            pending = pending[batch_size:]
 
             attempt_start = time.perf_counter()
             for task in batch:
@@ -273,9 +277,27 @@ class TaskRunner:
                 self.writer.write(task.id, model_key, task.prompt_hash, payload)
                 _finalize(task, True)
 
+            request_error = connector.pop_last_request_error()
+
             if not retry_queue:
+                success_streak += 1
+                if (
+                    success_streak >= 2
+                    and current_batch_size < max_batch_size
+                    and not request_error
+                ):
+                    new_size = min(max_batch_size, current_batch_size + 1)
+                    if new_size != current_batch_size:
+                        current_batch_size = new_size
+                        self.logger.info(
+                            "Increasing batch size for model %s to %s after stable responses.",
+                            connector.model,
+                            current_batch_size,
+                        )
+                        success_streak = 0
                 continue
 
+            success_streak = 0
             still_pending: List[Task] = []
             for task in retry_queue:
                 state = states.get(task.id)
@@ -295,6 +317,18 @@ class TaskRunner:
                     _finalize(task, False)
 
             if still_pending and not self.shutdown_event.is_set():
+                if request_error and len(retry_queue) == len(batch) and current_batch_size > 1:
+                    new_size = max(1, current_batch_size // 2)
+                    if new_size == current_batch_size:
+                        new_size = max(1, current_batch_size - 1)
+                    if new_size != current_batch_size:
+                        current_batch_size = new_size
+                        self.logger.warning(
+                            "Reducing batch size for model %s to %s after request error: %s.",
+                            connector.model,
+                            current_batch_size,
+                            request_error,
+                        )
                 connector.reinforce_compliance()
                 pending = still_pending + pending
 

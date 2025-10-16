@@ -53,6 +53,9 @@ class ModelConnector:
         self.compliance_interval = max(0, int(compliance_interval or 0))
         self._session_messages: List[Dict[str, str]] = []
         self._history: List[Dict[str, str]] = []
+        # Limit the amount of conversation state retained in memory to avoid
+        # unbounded growth when processing large batches of headlines.
+        self._history_limit = 50  # stores up to 25 prompt/response pairs
         self._active = False
         self._headline_counter = 0
         self._auto_compliance_reminders = 0
@@ -133,6 +136,7 @@ class ModelConnector:
 
         # Persist successful interaction in the conversation history.
         self._history.extend([user_message, {"role": "assistant", "content": content_text}])
+        self._prune_history()
         self._headline_counter += 1
 
         return normalized
@@ -144,6 +148,7 @@ class ModelConnector:
             return
         reminder = {"role": "user", "content": self.JSON_ONLY_INSTRUCTION}
         self._history.append(reminder)
+        self._prune_history()
         self._manual_compliance_reminders += 1
         self.logger.warning("[%s] Re-sent JSON compliance instruction.", self.model)
 
@@ -367,12 +372,25 @@ class ModelConnector:
         if self._headline_counter and self._headline_counter % self.compliance_interval == 0:
             reminder = {"role": "user", "content": self.JSON_ONLY_INSTRUCTION}
             self._history.append(reminder)
+            self._prune_history()
             self._auto_compliance_reminders += 1
             self.logger.info(
                 "[%s] Automatically re-sent JSON compliance instruction after %s headline(s).",
                 self.model,
                 self._headline_counter,
             )
+
+    def _prune_history(self) -> None:
+        """Trim stored history to the configured limit."""
+
+        if self._history_limit <= 0:
+            return
+
+        overflow = len(self._history) - self._history_limit
+        if overflow > 0:
+            # Keep only the most recent messages. We slice rather than popping in
+            # a loop to avoid quadratic time behaviour.
+            self._history = self._history[overflow:]
 
     @property
     def auto_compliance_reminders(self) -> int:

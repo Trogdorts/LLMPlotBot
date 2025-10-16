@@ -163,7 +163,6 @@ def _ensure_prompt_file(
 
     instructions_text = ""
     formatting_text = ""
-    base_dir = os.path.dirname(os.path.abspath(prompt_file))
 
     if os.path.exists(prompt_file):
         with open(prompt_file, "r", encoding="utf-8") as f:
@@ -180,16 +179,12 @@ def _ensure_prompt_file(
         instructions_text = instructions_text or DEFAULT_INSTRUCTIONS.strip()
         formatting_text = formatting_text or DEFAULT_FORMATTING.strip()
         logger.info(
-            "Migrated split prompt files into %s",
-            normalize_for_logging(prompt_file, extra_roots=[base_dir]),
+            "Migrated split prompt files into %s", prompt_file
         )
     else:
         instructions_text = DEFAULT_INSTRUCTIONS.strip()
         formatting_text = DEFAULT_FORMATTING.strip()
-        logger.warning(
-            "Created default prompt content in %s",
-            normalize_for_logging(prompt_file, extra_roots=[base_dir]),
-        )
+        logger.warning("Created default prompt content in %s", prompt_file)
 
     combined_prompt = "\n\n".join(
         section.strip() for section in (instructions_text, formatting_text) if section
@@ -204,15 +199,9 @@ def _ensure_prompt_file(
         if os.path.exists(legacy_path):
             try:
                 os.remove(legacy_path)
-                logger.info(
-                    "Removed legacy prompt file: %s",
-                    normalize_for_logging(legacy_path, extra_roots=[base_dir]),
-                )
+                logger.info("Removed legacy prompt file: %s", legacy_path)
             except OSError:
-                logger.debug(
-                    "Unable to remove legacy prompt file: %s",
-                    normalize_for_logging(legacy_path, extra_roots=[base_dir]),
-                )
+                logger.debug("Unable to remove legacy prompt file: %s", legacy_path)
 
     return instructions_text, formatting_text
 

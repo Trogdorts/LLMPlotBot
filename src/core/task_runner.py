@@ -1,10 +1,7 @@
-"""Task runner that orchestrates per-model execution with rich metrics."""
-
-from __future__ import annotations
+"""Task runner that orchestrates per-model execution (now concurrent)."""
 
 import threading
-import time
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from .model_connector import ModelConnector
 from .task import Task
@@ -71,10 +68,7 @@ class TaskRunner:
     # ------------------------------------------------------------------
     def run(self) -> None:
         """Run through all tasks for each model concurrently."""
-        threads: List[threading.Thread] = []
-
-        with self._stats_lock:
-            self._stats["start_time"] = time.perf_counter()
+        threads = []
 
         for model, tasks in self.tasks_by_model.items():
             if self.shutdown_event.is_set():
@@ -99,9 +93,6 @@ class TaskRunner:
 
         for thread in threads:
             thread.join()
-
-        with self._stats_lock:
-            self._stats["end_time"] = time.perf_counter()
 
         if self.shutdown_event.is_set():
             self.logger.info("Task runner halted due to shutdown signal.")
@@ -136,6 +127,30 @@ class TaskRunner:
             connector.close_session()
             duration = time.perf_counter() - queue_start
             self._record_queue_duration(model, duration)
+
+    # ------------------------------------------------------------------
+    def _run_model_queue(self, model: str, tasks: List[Task]) -> None:
+        if self.shutdown_event.is_set():
+            return
+
+        if not tasks:
+            self.logger.debug("No tasks queued for model %s; skipping.", model)
+            return
+
+        connector = self.connectors.get(model)
+        if not connector:
+            self.logger.error("No connector available for model %s", model)
+            return
+
+        connector.start_session(
+            tasks[0].prompt_dynamic,
+            tasks[0].prompt_formatting,
+        )
+
+        try:
+            self._process_model_tasks(connector, tasks)
+        finally:
+            connector.close_session()
 
     # ------------------------------------------------------------------
     def _process_model_tasks(self, connector: ModelConnector, tasks: List[Task]) -> None:

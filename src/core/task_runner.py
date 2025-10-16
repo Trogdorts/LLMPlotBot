@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -177,7 +178,7 @@ class TaskRunner:
                 self._record_task_metrics(task.id, connector.model, False, 0, 0.0)
             return
 
-        pending: List[Task] = list(tasks)
+        pending = deque(tasks)
         states: Dict[str, _TaskAttemptState] = {}
         max_batch_size = self.batch_size
         current_batch_size = max_batch_size
@@ -232,8 +233,7 @@ class TaskRunner:
                 break
 
             batch_size = max(1, min(current_batch_size, len(pending)))
-            batch = pending[:batch_size]
-            pending = pending[batch_size:]
+            batch = [pending.popleft() for _ in range(batch_size)]
 
             attempt_start = time.perf_counter()
             for task in batch:
@@ -330,7 +330,7 @@ class TaskRunner:
                             request_error,
                         )
                 connector.reinforce_compliance()
-                pending = still_pending + pending
+                pending.extendleft(reversed(still_pending))
 
         if self.shutdown_event.is_set():
             for task_id, state in list(states.items()):

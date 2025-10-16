@@ -1,12 +1,9 @@
 """Task runner that orchestrates per-model execution (now concurrent)."""
 
-import threading
-from typing import Dict, List
-
+import logging
 import threading
 import time
-import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .metrics import RunnerMetrics
 from .model_connector import ModelConnector
@@ -25,6 +22,9 @@ class TaskRunner:
         retry_limit: int,
         shutdown_event: threading.Event,
         logger: logging.Logger,
+        *,
+        summary_interval: float = 0.0,
+        model_aliases: Optional[Dict[str, str]] = None,
     ) -> None:
         self.tasks_by_model = tasks_by_model
         self.connectors = connectors
@@ -32,19 +32,23 @@ class TaskRunner:
         self.retry_limit = max(0, retry_limit)
         self.shutdown_event = shutdown_event
         self.logger = logger
-        self._summary_interval = max(0.0, summary_interval)
+        self.model_aliases = model_aliases or {}
+        self._summary_interval = max(0.0, float(summary_interval))
         self._summary_stop = threading.Event()
         self._summary_thread: threading.Thread | None = None
 
         total_tasks = sum(len(tasks) for tasks in tasks_by_model.values())
         self._metrics = RunnerMetrics(total_tasks=total_tasks)
-        for model, tasks in tasks_by_model.items():
-            self._metrics.ensure_model(model, queued=len(tasks))
+        queued_counts: Dict[str, int] = {}
         for model in connectors:
-            self._metrics.ensure_model(model, queued=len(tasks_by_model.get(model, [])))
-        self._stats_lock = threading.Lock()
+            alias = self.model_aliases.get(model, model)
+            count = len(tasks_by_model.get(model, []))
+            queued_counts[alias] = queued_counts.get(alias, 0) + count
 
-        total_tasks = sum(len(tasks) for tasks in tasks_by_model.values())
+        for alias, queued in queued_counts.items():
+            self._metrics.ensure_model(alias, queued=queued)
+
+        self._stats_lock = threading.Lock()
 
         def _make_model_stats(queued: int) -> Dict[str, object]:
             return {
@@ -61,10 +65,11 @@ class TaskRunner:
             }
 
         per_model = {
-            model: _make_model_stats(len(tasks)) for model, tasks in tasks_by_model.items()
+            alias: _make_model_stats(queued) for alias, queued in queued_counts.items()
         }
         for model in connectors:
-            per_model.setdefault(model, _make_model_stats(len(tasks_by_model.get(model, []))))
+            alias = self.model_aliases.get(model, model)
+            per_model.setdefault(alias, _make_model_stats(0))
 
         self._stats = {
             "total_tasks": total_tasks,
@@ -146,30 +151,6 @@ class TaskRunner:
             self._record_queue_duration(model, duration)
 
     # ------------------------------------------------------------------
-    def _run_model_queue(self, model: str, tasks: List[Task]) -> None:
-        if self.shutdown_event.is_set():
-            return
-
-        if not tasks:
-            self.logger.debug("No tasks queued for model %s; skipping.", model)
-            return
-
-        connector = self.connectors.get(model)
-        if not connector:
-            self.logger.error("No connector available for model %s", model)
-            return
-
-        connector.start_session(
-            tasks[0].prompt_dynamic,
-            tasks[0].prompt_formatting,
-        )
-
-        try:
-            self._process_model_tasks(connector, tasks)
-        finally:
-            connector.close_session()
-
-    # ------------------------------------------------------------------
     def _process_model_tasks(self, connector: ModelConnector, tasks: List[Task]) -> None:
         for task in tasks:
             if self.shutdown_event.is_set():
@@ -231,7 +212,8 @@ class TaskRunner:
             result = connector.send_headline(task.title)
             if result:
                 result["title"] = task.title
-                self.writer.write(task.id, task.model, task.prompt_hash, result)
+                model_key = self.model_aliases.get(task.model, task.model)
+                self.writer.write(task.id, model_key, task.prompt_hash, result)
                 return True, attempt
 
             if attempt < self.retry_limit and not self.shutdown_event.is_set():
@@ -262,8 +244,9 @@ class TaskRunner:
             if attempts > 1:
                 stats["retry_tasks"] += 1
 
+            model_key = self.model_aliases.get(model, model)
             model_stats = stats["per_model"].setdefault(
-                model,
+                model_key,
                 {
                     "queued": 0,
                     "processed": 0,
@@ -292,8 +275,9 @@ class TaskRunner:
     # ------------------------------------------------------------------
     def _record_queue_duration(self, model: str, duration: float) -> None:
         with self._stats_lock:
+            model_key = self.model_aliases.get(model, model)
             model_stats = self._stats["per_model"].setdefault(
-                model,
+                model_key,
                 {
                     "queued": 0,
                     "processed": 0,

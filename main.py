@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+from collections import OrderedDict
 
 from src.config import CONFIG, CONFIG_SOURCES
 from src.core.model_connector import ModelConnector
@@ -11,7 +12,11 @@ from src.core.task import Task
 from src.core.task_runner import TaskRunner
 from src.core.writer import ResultWriter
 from src.util.backup_utils import create_backup
-from src.util.lmstudio_models import get_model_keys
+from src.util.lmstudio_models import (
+    get_model_keys,
+    group_model_keys,
+    normalize_model_key,
+)
 from src.util.logger_setup import setup_logger
 from src.util.prompt_utils import load_and_archive_prompt
 from src.util.utils_io import build_cache, load_cache
@@ -66,6 +71,15 @@ def resolve_model_endpoints(config, logger):
             logger.error("No running LM Studio models detected and no models configured.")
             return {}
         logger.info("Detected running LM Studio models: %s", ", ".join(detected))
+
+        grouped = group_model_keys(detected)
+        duplicates = {base: keys for base, keys in grouped.items() if len(keys) > 1}
+        if duplicates:
+            duplicate_summary = ", ".join(
+                f"{base} ×{len(keys)}" for base, keys in duplicates.items()
+            )
+            logger.info("Detected multi-instance models: %s", duplicate_summary)
+
         candidate_models = detected
 
     filtered_models = [model for model in candidate_models if model.lower() not in blocklist]
@@ -148,6 +162,7 @@ def main():
             )
 
     compliance_interval = int(CONFIG.get("COMPLIANCE_REMINDER_INTERVAL", 0) or 0)
+    summary_interval = float(CONFIG.get("SUMMARY_INTERVAL", 0.0) or 0.0)
     if compliance_interval > 0:
         logger.info(
             "Automatic JSON compliance reminders every %s headline(s).",
@@ -165,10 +180,33 @@ def main():
     }
     logger.info("Initialized %s connector(s).", len(connectors))
 
-    tasks_by_model = {model: [] for model in connectors}
+    model_groups = OrderedDict()
+    model_aliases = {}
     for model in connectors:
-        for tid, info in title_items:
-            tasks_by_model[model].append(
+        base = normalize_model_key(model)
+        model_groups.setdefault(base, []).append(model)
+        model_aliases[model] = base
+
+    def _distribute_titles(items, slots):
+        if slots <= 1:
+            return [list(items)]
+        buckets = [[] for _ in range(slots)]
+        for idx, item in enumerate(items):
+            buckets[idx % slots].append(item)
+        return buckets
+
+    tasks_by_model = {}
+    for base, models in model_groups.items():
+        subsets = _distribute_titles(title_items, len(models))
+        if len(models) > 1:
+            logger.info(
+                "Distributing %s headline(s) across %s instances of %s.",
+                len(title_items),
+                len(models),
+                base,
+            )
+        for model, subset in zip(models, subsets):
+            tasks_by_model[model] = [
                 Task(
                     tid,
                     info["title"],
@@ -177,7 +215,8 @@ def main():
                     prompt_bundle.dynamic_section,
                     prompt_bundle.formatting_section,
                 )
-            )
+                for tid, info in subset
+            ]
 
     total_tasks = sum(len(items) for items in tasks_by_model.values())
     logger.info(
@@ -194,6 +233,7 @@ def main():
         shutdown_event,
         logger,
         summary_interval=summary_interval,
+        model_aliases=model_aliases,
     )
 
     try:

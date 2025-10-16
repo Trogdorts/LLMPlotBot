@@ -84,6 +84,7 @@ class ModelConnector:
         self._auto_compliance_reminders = 0
         self._manual_compliance_reminders = 0
         self._array_warning_count = 0
+        self._last_request_error: Optional[requests.RequestException] = None
 
     # ------------------------------------------------------------------
     def start_session(self, prompt_dynamic: str, prompt_formatting: str) -> None:
@@ -156,10 +157,12 @@ class ModelConnector:
         )
         self.logger.debug("SEND → %s", compact_payload)
 
+        self._last_request_error = None
         try:
             response = requests.post(self.url, json=payload, timeout=self.request_timeout)
         except requests.RequestException as exc:
             self.logger.error("[%s] HTTP request failed: %s", self.model, exc)
+            self._last_request_error = exc
             return None
 
         raw_text = response.text.strip()
@@ -172,6 +175,9 @@ class ModelConnector:
                 self.model,
                 response.status_code,
                 response.reason,
+            )
+            self._last_request_error = requests.HTTPError(
+                f"HTTP {response.status_code} {response.reason}"
             )
             return None
 
@@ -235,6 +241,13 @@ class ModelConnector:
             self._headline_counter += success_count
 
         return results
+
+    def pop_last_request_error(self) -> Optional[requests.RequestException]:
+        """Return and clear the most recent request-level error, if any."""
+
+        error = self._last_request_error
+        self._last_request_error = None
+        return error
 
     # ------------------------------------------------------------------
     def reinforce_compliance(self) -> None:

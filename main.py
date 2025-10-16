@@ -107,7 +107,7 @@ def resolve_model_endpoints(config, logger):
 # ------------------------------------------------------------------
 def main():
     # ---------- Initialize logging ----------
-    logger = setup_logger(CONFIG["LOG_DIR"], logging.INFO)
+    logger = setup_logger(CONFIG["LOG_DIR"], logging.DEBUG)
     logger.info("=== LLM Sequential Processor Starting ===")
     if CONFIG_SOURCES:
         logger.info("Loaded config overrides from: %s", ", ".join(CONFIG_SOURCES))

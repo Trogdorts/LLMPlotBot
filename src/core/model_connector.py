@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from requests import Session
+
 
 def clean_prompt_text(text: str) -> str:
     """Return a single-line version of ``text`` for embedding in prompts."""
@@ -85,6 +87,9 @@ class ModelConnector:
         self._manual_compliance_reminders = 0
         self._array_warning_count = 0
         self._last_request_error: Optional[requests.RequestException] = None
+        self._http: Session = Session()
+        self._http.headers.update({"Content-Type": "application/json"})
+        self._http.trust_env = False
 
     # ------------------------------------------------------------------
     def start_session(self, prompt_dynamic: str, prompt_formatting: str) -> None:
@@ -159,7 +164,9 @@ class ModelConnector:
 
         self._last_request_error = None
         try:
-            response = requests.post(self.url, json=payload, timeout=self.request_timeout)
+            response = self._http.post(
+                self.url, json=payload, timeout=self.request_timeout
+            )
         except requests.RequestException as exc:
             self.logger.error("[%s] HTTP request failed: %s", self.model, exc)
             self._last_request_error = exc
@@ -635,3 +642,10 @@ class ModelConnector:
     @property
     def array_warning_count(self) -> int:
         return self._array_warning_count
+
+    # ------------------------------------------------------------------
+    def shutdown(self) -> None:
+        """Close the HTTP session and reset conversation state."""
+
+        self.close_session()
+        self._http.close()

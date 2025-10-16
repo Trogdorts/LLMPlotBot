@@ -13,10 +13,25 @@ from typing import Any, Dict, Iterator, Mapping, Optional, Tuple
 
 from .path_utils import normalize_for_logging
 
+from .path_utils import normalize_for_logging
+
 LOCK = threading.Lock()
 
 
-CacheIndex = Dict[str, Dict[str, str]]
+def load_cache(config, logger):
+    """Load titles_index.json if it exists in BASE_DIR."""
+    cache_path = config["CACHE_PATH"]
+    if os.path.exists(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        logger.info(
+            "Loaded %s cached entries from %s.",
+            len(data),
+            normalize_for_logging(cache_path),
+        )
+        return data
+    logger.warning("Cache file not found.")
+    return None
 
 
 def load_cache(config: Mapping[str, Any], logger) -> Optional[CacheIndex]:
@@ -43,12 +58,12 @@ def save_final(data: CacheIndex, config: Mapping[str, Any], logger) -> None:
 
     cache_path = Path(config["CACHE_PATH"])
     with LOCK:
-        with cache_path.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
         logger.info(
             "Saved %s entries to %s",
             len(data),
-            normalize_for_logging(str(cache_path)),
+            normalize_for_logging(cache_path),
         )
     gc.collect()
 
@@ -82,6 +97,7 @@ def build_cache(config: Mapping[str, Any], logger) -> CacheIndex:
     max_workers = config.get("MAX_WORKERS", 4)
     index: CacheIndex = {}
     start = datetime.now()
+    logger.info("Scanning %s", normalize_for_logging(json_dir))
 
     logger.info("Scanning %s", normalize_for_logging(str(json_dir)))
 

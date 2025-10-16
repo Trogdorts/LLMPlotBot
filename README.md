@@ -40,15 +40,12 @@ deeply, so you can override just the keys you care about.
 - `COMPLIANCE_REMINDER_INTERVAL` (0 disables) automatically replays the
   JSON-compliance reminder after every _N_ headlines to keep long sessions on
   track.
-- `SUMMARY_LOG_INTERVAL_SECONDS` (0 disables) emits an info-level metrics
-  summary on the configured cadence in addition to the final run report.
 
 Active override sources are logged on start-up.
 
 ## Runtime metrics
 
 Each run logs a summary with total runtime, success and failure rates, retry
-counts, and per-model averages. Enable periodic summaries with
-`SUMMARY_LOG_INTERVAL_SECONDS` to keep tabs on long-lived runs. Connector-level
-reminders (manual, automatic, and multi-object response warnings) are
-aggregated in every summary so you can spot models that drift off spec.
+counts, and per-model averages. Connector-level reminders (manual, automatic,
+and multi-object response warnings) are aggregated in the summary so you can
+spot models that drift off spec.

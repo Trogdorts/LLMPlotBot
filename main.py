@@ -153,12 +153,6 @@ def main():
             "Automatic JSON compliance reminders every %s headline(s).",
             compliance_interval,
         )
-    summary_interval = float(CONFIG.get("SUMMARY_LOG_INTERVAL_SECONDS", 0) or 0)
-    if summary_interval > 0:
-        logger.info(
-            "Periodic summary logging every %.1f second(s).",
-            summary_interval,
-        )
     connectors = {
         model: ModelConnector(
             model,

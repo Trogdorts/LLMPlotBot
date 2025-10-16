@@ -194,6 +194,7 @@ def main():
             CONFIG["REQUEST_TIMEOUT"],
             compliance_interval,
             logger,
+            CONFIG.get("EXPECTED_LANGUAGE"),
         )
         for model, url in CONFIG["LLM_ENDPOINTS"].items()
     }

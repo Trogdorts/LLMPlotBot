@@ -3,7 +3,8 @@
 import logging
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 from .metrics import RunnerMetrics
 from .metrics_collector import MetricsCollector
@@ -11,6 +12,13 @@ from .metrics_summary import MetricsSummaryReporter
 from .model_connector import ModelConnector
 from .task import Task
 from .writer import ResultWriter
+
+
+@dataclass
+class _TaskAttemptState:
+    task: Task
+    attempts: int = 0
+    start_time: float = 0.0
 
 
 class TaskRunner:
@@ -28,6 +36,7 @@ class TaskRunner:
         model_aliases: Optional[Dict[str, str]] = None,
         metrics_collector: MetricsCollector | None = None,
         summary_reporter: MetricsSummaryReporter | None = None,
+        batch_size: int = 1,
     ) -> None:
         self.tasks_by_model = tasks_by_model
         self.connectors = connectors
@@ -38,6 +47,7 @@ class TaskRunner:
         self.model_aliases = model_aliases or {}
         self.metrics_collector = metrics_collector
         self.summary_reporter = summary_reporter
+        self.batch_size = max(1, int(batch_size or 1))
 
         total_tasks = sum(len(tasks) for tasks in tasks_by_model.values())
         self._metrics = RunnerMetrics(total_tasks=total_tasks)
@@ -158,21 +168,24 @@ class TaskRunner:
 
     # ------------------------------------------------------------------
     def _process_model_tasks(self, connector: ModelConnector, tasks: List[Task]) -> None:
-        for task in tasks:
-            if self.shutdown_event.is_set():
-                self.logger.debug(
-                    "Shutdown requested; abandoning remaining tasks for %s.",
-                    connector.model,
+        if self.retry_limit <= 0:
+            for task in tasks:
+                self.logger.error(
+                    "Task id=%s could not be processed because RETRY_LIMIT is 0.",
+                    task.id,
                 )
-                return
+                self._record_task_metrics(task.id, connector.model, False, 0, 0.0)
+            return
 
-            self.logger.info("Processing task id=%s model=%s", task.id, task.model)
-            start = time.perf_counter()
-            success, attempts = self._run_with_retries(connector, task)
-            duration = time.perf_counter() - start
-            self._record_task_metrics(
-                task.id, connector.model, success, attempts, duration
-            )
+        pending: List[Task] = list(tasks)
+        states: Dict[str, _TaskAttemptState] = {}
+
+        def _finalize(task: Task, success: bool) -> None:
+            state = states.pop(task.id, None)
+            attempts = state.attempts if state else 0
+            start_time = state.start_time if state else time.perf_counter()
+            duration = max(0.0, time.perf_counter() - start_time)
+            self._record_task_metrics(task.id, connector.model, success, attempts, duration)
 
             if success:
                 self.logger.info(
@@ -181,60 +194,115 @@ class TaskRunner:
                     attempts,
                     duration,
                 )
-            else:
-                if attempts == 0:
-                    if self.shutdown_event.is_set():
-                        self.logger.warning(
-                            "Task id=%s was skipped due to shutdown before processing.",
-                            task.id,
-                        )
-                    else:
-                        self.logger.error(
-                            "Task id=%s could not be processed because RETRY_LIMIT is 0.",
-                            task.id,
-                        )
-                elif self.shutdown_event.is_set():
+                return
+
+            if attempts == 0:
+                if self.shutdown_event.is_set():
                     self.logger.warning(
-                        "Task id=%s halted after %s attempt(s) due to shutdown.",
+                        "Task id=%s was skipped due to shutdown before processing.",
                         task.id,
-                        attempts,
                     )
                 else:
                     self.logger.error(
-                        "Task id=%s failed after %s attempt(s); moving on.",
+                        "Task id=%s could not be processed because RETRY_LIMIT is 0.",
                         task.id,
-                        attempts,
                     )
-
-    # ------------------------------------------------------------------
-    def _run_with_retries(self, connector: ModelConnector, task: Task) -> Tuple[bool, int]:
-        attempt = 0
-        while attempt < self.retry_limit and not self.shutdown_event.is_set():
-            attempt += 1
-            self.logger.debug(
-                "Attempt %s for task id=%s model=%s",
-                attempt,
-                task.id,
-                connector.model,
-            )
-            result = connector.send_headline(task.title)
-            if result:
-                result["title"] = task.title
-                model_key = self.model_aliases.get(task.model, task.model)
-                self.writer.write(task.id, model_key, task.prompt_hash, result)
-                return True, attempt
-
-            if attempt < self.retry_limit and not self.shutdown_event.is_set():
-                connector.reinforce_compliance()
+            elif self.shutdown_event.is_set():
                 self.logger.warning(
-                    "Model %s returned invalid payload for task id=%s; retrying (%s/%s).",
-                    connector.model,
+                    "Task id=%s halted after %s attempt(s) due to shutdown.",
                     task.id,
-                    attempt,
-                    self.retry_limit,
+                    attempts,
+                )
+            else:
+                self.logger.error(
+                    "Task id=%s failed after %s attempt(s); moving on.",
+                    task.id,
+                    attempts,
                 )
 
-        return False, attempt
+        while pending:
+            if self.shutdown_event.is_set():
+                self.logger.debug(
+                    "Shutdown requested; abandoning remaining tasks for %s.",
+                    connector.model,
+                )
+                break
+
+            batch = pending[: self.batch_size]
+            pending = pending[self.batch_size :]
+
+            attempt_start = time.perf_counter()
+            for task in batch:
+                state = states.get(task.id)
+                if state is None:
+                    states[task.id] = _TaskAttemptState(
+                        task=task, attempts=0, start_time=attempt_start
+                    )
+                    self.logger.info(
+                        "Processing task id=%s model=%s", task.id, task.model
+                    )
+                elif state.start_time == 0.0:
+                    state.start_time = attempt_start
+
+            self.logger.info(
+                "Processing batch of %s task(s) for model %s.", len(batch), connector.model
+            )
+
+            responses = connector.send_batch([task.title for task in batch])
+            if responses is None:
+                responses = [None] * len(batch)
+            elif len(responses) != len(batch):
+                # Defensive: align lengths if connector could not map one-to-one.
+                adjusted = list(responses[: len(batch)])
+                if len(adjusted) < len(batch):
+                    adjusted.extend([None] * (len(batch) - len(adjusted)))
+                responses = adjusted
+
+            for task in batch:
+                states[task.id].attempts += 1
+
+            retry_queue: List[Task] = []
+            for task, payload in zip(batch, responses):
+                state = states.get(task.id)
+                if payload is None:
+                    retry_queue.append(task)
+                    continue
+
+                payload["title"] = task.title
+                model_key = self.model_aliases.get(task.model, task.model)
+                self.writer.write(task.id, model_key, task.prompt_hash, payload)
+                _finalize(task, True)
+
+            if not retry_queue:
+                continue
+
+            still_pending: List[Task] = []
+            for task in retry_queue:
+                state = states.get(task.id)
+                attempts = state.attempts if state else 0
+                if self.shutdown_event.is_set():
+                    _finalize(task, False)
+                elif attempts < self.retry_limit:
+                    self.logger.warning(
+                        "Model %s returned invalid payload for task id=%s; retrying (%s/%s).",
+                        connector.model,
+                        task.id,
+                        attempts,
+                        self.retry_limit,
+                    )
+                    still_pending.append(task)
+                else:
+                    _finalize(task, False)
+
+            if still_pending and not self.shutdown_event.is_set():
+                connector.reinforce_compliance()
+                pending = still_pending + pending
+
+        if self.shutdown_event.is_set():
+            for task_id, state in list(states.items()):
+                if state.attempts == 0:
+                    continue
+                _finalize(state.task, False)
 
     # ------------------------------------------------------------------
     def _record_task_metrics(

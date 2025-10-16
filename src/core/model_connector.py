@@ -1,4 +1,4 @@
-"""Model connector for sequential task execution with persistent sessions."""
+"""Model connector for batched task execution with persistent sessions."""
 
 from __future__ import annotations
 
@@ -101,14 +101,33 @@ class ModelConnector:
 
     # ------------------------------------------------------------------
     def send_headline(self, headline: str) -> Optional[Dict[str, object]]:
-        """Send one headline to the model and return the validated JSON payload."""
+        """Backward-compatible wrapper that processes a single headline."""
+
+        results = self.send_batch([headline])
+        if not results:
+            return None
+        return results[0]
+
+    def send_batch(
+        self, headlines: List[str]
+    ) -> Optional[List[Optional[Dict[str, object]]]]:
+        """Send multiple headlines and return validated payloads in order."""
+
+        if not headlines:
+            return []
+
         if not self._active:
             raise RuntimeError("Session has not been started. Call start_session() first.")
 
         self._maybe_send_auto_compliance_reminder()
 
-        headline_text = self._format_headline(headline)
-        user_message = {"role": "user", "content": headline_text}
+        start_index = self._headline_counter + 1
+        numbered_lines = [
+            f"{start_index + idx}. {clean_prompt_text(headline)}"
+            for idx, headline in enumerate(headlines)
+        ]
+        batch_text = "\n".join(numbered_lines)
+        user_message = {"role": "user", "content": batch_text}
         messages = self._session_messages + self._history + [user_message]
 
         payload = {
@@ -119,9 +138,10 @@ class ModelConnector:
 
         compact_payload = json.dumps(payload, ensure_ascii=False)
         self.logger.debug(
-            "Dispatching HTTP request for model=%s with headline #%s",
+            "Dispatching HTTP request for model=%s with headlines #%s-%s",
             self.model,
-            self._headline_counter + 1,
+            start_index,
+            start_index + len(headlines) - 1,
         )
         self.logger.debug("SEND → %s", compact_payload)
 
@@ -136,30 +156,61 @@ class ModelConnector:
         compact_response = raw_text.replace("\n", " ").replace("  ", " ")
         self.logger.debug("RECV ← %s", compact_response)
 
-        parsed_response, content_text = self._extract_first_object(raw_text)
-        if not parsed_response:
-            self.logger.error("[%s] Failed to parse valid JSON object.", self.model)
+        parsed_entries, content_text = self._extract_response_entries(raw_text)
+        if parsed_entries is None:
+            self.logger.error("[%s] Failed to parse JSON array response.", self.model)
             return None
 
-        normalized = self._normalize_payload(parsed_response)
-        if normalized is None:
-            self.logger.error("[%s] Response failed schema validation.", self.model)
-            return None
+        results: List[Optional[Dict[str, object]]] = [None] * len(headlines)
+        max_index = min(len(parsed_entries), len(headlines))
 
-        if self._language_checker and not self._validate_language(normalized):
-            self.logger.error(
-                "[%s] Response failed language validation for '%s'.",
+        for offset in range(max_index):
+            normalized = self._normalize_payload(parsed_entries[offset])
+            entry_number = start_index + offset
+            if normalized is None:
+                self.logger.error(
+                    "[%s] Entry %s failed schema validation.", self.model, entry_number
+                )
+                continue
+
+            if self._language_checker and not self._validate_language(normalized):
+                self.logger.error(
+                    "[%s] Entry %s failed language validation for '%s'.",
+                    self.model,
+                    entry_number,
+                    self.expected_language,
+                )
+                continue
+
+            results[offset] = normalized
+
+        if len(parsed_entries) > len(headlines):
+            self._array_warning_count += 1
+            self.logger.warning(
+                "[%s] Received %s objects for %s headline(s); ignoring extras.",
                 self.model,
-                self.expected_language,
+                len(parsed_entries),
+                len(headlines),
             )
-            return None
+        elif len(parsed_entries) < len(headlines):
+            missing = len(headlines) - len(parsed_entries)
+            if missing:
+                self.logger.warning(
+                    "[%s] Missing %s response(s) in returned array.",
+                    self.model,
+                    missing,
+                )
 
-        # Persist successful interaction in the conversation history.
-        self._history.extend([user_message, {"role": "assistant", "content": content_text}])
-        self._prune_history()
-        self._headline_counter += 1
+        success_count = sum(1 for item in results if item is not None)
+        if success_count:
+            # Persist successful interaction in the conversation history.
+            self._history.extend(
+                [user_message, {"role": "assistant", "content": content_text}]
+            )
+            self._prune_history()
+            self._headline_counter += success_count
 
-        return normalized
+        return results
 
     # ------------------------------------------------------------------
     def reinforce_compliance(self) -> None:
@@ -173,12 +224,11 @@ class ModelConnector:
         self.logger.warning("[%s] Re-sent JSON compliance instruction.", self.model)
 
     # ------------------------------------------------------------------
-    def _format_headline(self, headline: str) -> str:
-        index = self._headline_counter + 1
-        return f"{index}. {clean_prompt_text(headline)}"
+    def _extract_response_entries(
+        self, raw_text: str
+    ) -> Tuple[Optional[List[Dict[str, object]]], str]:
+        """Extract a list of JSON objects from the model response content."""
 
-    def _extract_first_object(self, raw_text: str) -> Tuple[Optional[Dict[str, object]], str]:
-        """Extract the first JSON object from the model response."""
         try:
             payload = json.loads(raw_text)
         except json.JSONDecodeError as exc:
@@ -191,23 +241,15 @@ class ModelConnector:
             self.logger.error("[%s] Unexpected response envelope: %s", self.model, exc)
             return None, ""
 
-        self.logger.debug("PARSING JSON OBJECT → %s", content[:500])
+        self.logger.debug("PARSING JSON ARRAY → %s", content[:500])
         repaired = self._repair_and_parse_json(content)
 
         if isinstance(repaired, dict):
-            return repaired, content
+            return [repaired], content
 
         if isinstance(repaired, list):
             dict_items = [item for item in repaired if isinstance(item, dict)]
-            if dict_items:
-                if len(dict_items) > 1:
-                    self._array_warning_count += 1
-                    self.logger.warning(
-                        "[%s] Received array with %s objects; using the first entry.",
-                        self.model,
-                        len(dict_items),
-                    )
-                return dict_items[0], content
+            return dict_items or None, content
 
         return None, content
 

@@ -45,6 +45,9 @@ override just the keys you care about.
 - `COMPLIANCE_REMINDER_INTERVAL` (0 disables) automatically replays the
   JSON-compliance reminder after every _N_ headlines to keep long sessions on
   track.
+- `TASK_BATCH_SIZE` controls how many headlines are sent to each connector per
+  LLM request. Increase it to process more titles per round-trip; decrease it
+  if a model struggles with large payloads.
 
 Active override sources are logged on start-up.
 

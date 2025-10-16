@@ -260,12 +260,22 @@ class ModelConnector:
         self.logger.debug("PARSING JSON ARRAY → %s", content[:500])
         repaired = self._repair_and_parse_json(content)
 
-        if isinstance(repaired, dict):
-            return [repaired], content
+        entries: Optional[List[Dict[str, object]]] = None
+        normalized_content = content
 
-        if isinstance(repaired, list):
+        if isinstance(repaired, dict):
+            entries = [repaired]
+        elif isinstance(repaired, list):
             dict_items = [item for item in repaired if isinstance(item, dict)]
-            return dict_items or None, content
+            entries = dict_items or None
+
+        if entries:
+            normalized_content = self._normalise_response_content(entries)
+            if normalized_content != content:
+                self.logger.debug(
+                    "[%s] Normalized assistant content before caching.", self.model
+                )
+            return entries, normalized_content
 
         return None, content
 
@@ -329,6 +339,17 @@ class ModelConnector:
             if candidate:
                 return candidate
         return None
+
+    def _normalise_response_content(
+        self, entries: List[Dict[str, object]]
+    ) -> str:
+        """Return a compact JSON array string for caching in the conversation."""
+
+        try:
+            return json.dumps(entries, ensure_ascii=False, separators=(",", ": "))
+        except TypeError:
+            serializable = json.loads(json.dumps(entries, default=str, ensure_ascii=False))
+            return json.dumps(serializable, ensure_ascii=False, separators=(",", ": "))
 
     def _normalize_payload(self, payload: Dict[str, object]) -> Optional[Dict[str, object]]:
         """Coerce malformed responses into the expected schema when possible."""

@@ -18,6 +18,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "TEST_LIMIT_PER_MODEL": 10,
     "JSON_DIR": "./data/json",
     "MAX_WORKERS": 8,
+    "TASK_BATCH_SIZE": 5,
     "RETRY_LIMIT": 3,
     "REQUEST_TIMEOUT": 90,
     "LLM_BASE_URL": "http://localhost:1234",

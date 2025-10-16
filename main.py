@@ -1,4 +1,4 @@
-"""Main entry point for sequential headline processing via persistent LLM sessions."""
+"""Main entry point for batched headline processing via persistent LLM sessions."""
 
 import logging
 import os
@@ -294,6 +294,7 @@ def main():
         model_aliases=model_aliases,
         metrics_collector=metrics_collector,
         summary_reporter=summary_reporter,
+        batch_size=CONFIG.get("TASK_BATCH_SIZE", 1),
     )
 
     try:

@@ -1,28 +1,20 @@
 """Utilities for discovering active LM Studio models."""
 
 from __future__ import annotations
-
-import json
-import re
-import subprocess
+import json, re, subprocess
 from collections import OrderedDict
 from typing import Iterable, List, Optional
 
-
 MODEL_INSTANCE_SUFFIX = re.compile(r":\d+$")
-
 
 def normalize_model_key(key: str) -> str:
     """Return the base model identifier without LM Studio instance suffixes."""
-
     if not isinstance(key, str):
         return ""
     return MODEL_INSTANCE_SUFFIX.sub("", key.strip())
 
-
 def group_model_keys(keys: Iterable[str]) -> "OrderedDict[str, List[str]]":
     """Group LM Studio model keys by their normalized base name."""
-
     grouped: "OrderedDict[str, List[str]]" = OrderedDict()
     for key in keys:
         base = normalize_model_key(key)
@@ -31,10 +23,8 @@ def group_model_keys(keys: Iterable[str]) -> "OrderedDict[str, List[str]]":
         grouped.setdefault(base, []).append(key)
     return grouped
 
-
 def get_model_keys(logger: Optional[object] = None) -> List[str]:
     """Return the model keys for currently running chat-capable LM Studio models."""
-
     try:
         result = subprocess.run(
             ["lms", "ps", "--json"],
@@ -42,7 +32,7 @@ def get_model_keys(logger: Optional[object] = None) -> List[str]:
             text=True,
             check=True,
         )
-    except Exception as exc:  # pragma: no cover - best effort discovery
+    except Exception as exc:
         if logger:
             logger.error(f"Unable to query LM Studio models: {exc}")
         else:
@@ -51,7 +41,7 @@ def get_model_keys(logger: Optional[object] = None) -> List[str]:
 
     try:
         models = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:  # pragma: no cover - guard against malformed output
+    except json.JSONDecodeError as exc:
         if logger:
             logger.error(f"Failed to decode LM Studio response: {exc}")
         else:
@@ -60,20 +50,11 @@ def get_model_keys(logger: Optional[object] = None) -> List[str]:
 
     keys: List[str] = []
     for model in models:
-        key = model.get("modelKey")
-        if not key:
-            continue
-
-        lowered = key.lower()
-        if "embed" in lowered or "embedding" in lowered:
-            continue
-
-        if key not in keys:
+        # Prefer 'identifier' (includes :2 etc.) if available, else fall back to 'modelKey'
+        key = model.get("identifier") or model.get("modelKey")
+        if key and "embed" not in key.lower() and "embedding" not in key.lower():
             keys.append(key)
-
     return keys
 
-
-if __name__ == "__main__":  # pragma: no cover - manual utility execution
+if __name__ == "__main__":
     print(get_model_keys())
-

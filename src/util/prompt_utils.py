@@ -207,10 +207,7 @@ def _ensure_prompt_file(
 
 
 def load_and_archive_prompt(base_dir: str, logger) -> PromptBundle:
-    """
-    Ensure a split prompt exists, combine sections, archive the composite prompt, and
-    return both the combined text and section references.
-    """
+    """Return the active prompt bundle while keeping on-disk artefacts in sync."""
 
     prompt_file = os.path.join(base_dir, "prompt.txt")
     instructions_path = os.path.join(base_dir, "prompt_instructions.txt")

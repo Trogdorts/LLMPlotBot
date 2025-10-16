@@ -1,5 +1,7 @@
 """Model connector for sequential task execution with persistent sessions."""
 
+from __future__ import annotations
+
 import json
 import re
 from collections import OrderedDict
@@ -9,9 +11,10 @@ import requests
 
 
 def clean_prompt_text(text: str) -> str:
-    """Remove newlines, tabs, carriage returns, and repeated spaces."""
+    """Return a single-line version of ``text`` for embedding in prompts."""
+
     if not isinstance(text, str):
-        return text
+        return ""
     text = re.sub(r"[\n\r\t]+", " ", text)
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip()
@@ -183,7 +186,9 @@ class ModelConnector:
 
         return None, content
 
-    def _repair_and_parse_json(self, text: str):
+    def _repair_and_parse_json(
+        self, text: str
+    ) -> Optional[Dict[str, object]] | List[Dict[str, object]] | None:
         original = text.strip()
         fence_cleaned = re.sub(r"```(?:json)?", "", original, flags=re.IGNORECASE)
         fence_cleaned = fence_cleaned.replace("```", "").strip()
@@ -207,7 +212,7 @@ class ModelConnector:
                 pass
 
         objs = re.findall(r"\{[^{}]*\}", fence_cleaned)
-        result = []
+        result: List[Dict[str, object]] = []
         for obj_text in objs:
             try:
                 result.append(json.loads(obj_text))

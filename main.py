@@ -147,6 +147,7 @@ def main():
         strategy=CONFIG.get("WRITE_STRATEGY", "immediate"),
         flush_interval=CONFIG.get("WRITE_BATCH_SIZE", 1),
         flush_seconds=CONFIG.get("WRITE_BATCH_SECONDS", 5.0),
+        flush_retry_limit=CONFIG.get("WRITE_BATCH_RETRY_LIMIT", 3),
         lock_timeout=CONFIG.get("FILE_LOCK_TIMEOUT", 10.0),
         lock_poll_interval=CONFIG.get("FILE_LOCK_POLL_INTERVAL", 0.1),
         lock_stale_seconds=CONFIG.get("FILE_LOCK_STALE_SECONDS", 300.0),

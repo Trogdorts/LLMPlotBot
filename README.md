@@ -21,6 +21,8 @@ behaviour via the following keys in `src/config.py`:
 - `WRITE_STRATEGY`: `"immediate"` (default) writes every result as soon as it
   arrives; set to `"batch"` to buffer results.
 - `WRITE_BATCH_SIZE` and `WRITE_BATCH_SECONDS`: thresholds for batch flushing.
+- `WRITE_BATCH_RETRY_LIMIT`: number of per-file retry attempts before a batch is
+  deferred for the next flush.
 - `FILE_LOCK_TIMEOUT`, `FILE_LOCK_POLL_INTERVAL`, and
   `FILE_LOCK_STALE_SECONDS`: control file-lock acquisition and stale lock
   cleanup.

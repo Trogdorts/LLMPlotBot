@@ -160,6 +160,7 @@ class MetricsSummaryReporter:
         success = sum(1 for record in records if record.get("success"))
         failed = total - success
         latencies = [float(record.get("latency", 0.0)) for record in records]
+        attempts = [int(record.get("attempts", 0)) for record in records]
         retries = [int(record.get("retries", 0)) for record in records]
         cpu_values = [
             float(record.get("cpu_percent"))
@@ -176,6 +177,8 @@ class MetricsSummaryReporter:
         max_latency = max(latencies) if latencies else 0.0
         failure_rate = (failed / total * 100.0) if total else 0.0
         average_retries = mean(retries) if retries else 0.0
+        average_attempts = mean(attempts) if attempts else 0.0
+        max_attempts = max(attempts) if attempts else 0
         throughput_per_minute = (total / session_duration * 60.0) if session_duration else 0.0
         cpu_average = mean(cpu_values) if cpu_values else None
         gpu_summary: Optional[Dict[str, float]]
@@ -194,6 +197,50 @@ class MetricsSummaryReporter:
         timestamp = datetime.fromtimestamp(end_time, tz=timezone.utc).isoformat()
         start_iso = datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat()
 
+        per_model: Dict[str, Dict[str, object]] = {}
+        if records:
+            grouped: Dict[str, List[Dict[str, object]]] = {}
+            for record in records:
+                model_name = str(record.get("model") or "unknown")
+                grouped.setdefault(model_name, []).append(record)
+
+            for model_name, model_records in grouped.items():
+                model_total = len(model_records)
+                model_success = sum(1 for entry in model_records if entry.get("success"))
+                model_failed = model_total - model_success
+                model_latencies = [float(entry.get("latency", 0.0)) for entry in model_records]
+                model_attempts = [int(entry.get("attempts", 0)) for entry in model_records]
+                model_retries = [int(entry.get("retries", 0)) for entry in model_records]
+
+                per_model[model_name] = {
+                    "processed": model_total,
+                    "success": model_success,
+                    "failed": model_failed,
+                    "failure_rate": (model_failed / model_total * 100.0)
+                    if model_total
+                    else 0.0,
+                    "average_latency": mean(model_latencies) if model_latencies else 0.0,
+                    "max_latency": max(model_latencies) if model_latencies else 0.0,
+                    "average_attempts": mean(model_attempts) if model_attempts else 0.0,
+                    "total_attempts": sum(model_attempts),
+                    "max_attempts": max(model_attempts) if model_attempts else 0,
+                    "average_retries": mean(model_retries) if model_retries else 0.0,
+                    "total_retries": sum(model_retries),
+                    "max_retries": max(model_retries) if model_retries else 0,
+                    "throughput_per_minute": (
+                        model_total / session_duration * 60.0
+                        if session_duration
+                        else 0.0
+                    ),
+                    "last_updated": datetime.fromtimestamp(
+                        max(
+                            (float(entry.get("timestamp", 0.0)) for entry in model_records),
+                            default=end_time,
+                        ),
+                        tz=timezone.utc,
+                    ).isoformat(),
+                }
+
         summary: Dict[str, object] = {
             "trigger": trigger,
             "reason": reason,
@@ -210,6 +257,14 @@ class MetricsSummaryReporter:
             "throughput_per_minute": throughput_per_minute,
             "average_retries": average_retries,
             "total_retries": sum(retries),
+            "average_attempts": average_attempts,
+            "total_attempts": sum(attempts),
+            "max_attempts": max_attempts,
+            "max_retries": max(retries) if retries else 0,
+            "total_models": len(per_model),
+            "per_model": per_model,
+            "total_requests": sum(attempts),
+            "payloads_received": success,
         }
 
         if cpu_average is not None:
@@ -224,7 +279,8 @@ class MetricsSummaryReporter:
     def _log_summary(self, summary: Dict[str, object]) -> None:
         message = (
             "Metrics summary (%s): processed=%s success=%s failed=%s "
-            "avg_latency=%.2fs failure_rate=%.2f%% throughput=%.2f/min"
+            "avg_latency=%.2fs failure_rate=%.2f%% throughput=%.2f/min "
+            "requests=%s retries=%s"
         )
         self.logger.info(
             message,
@@ -235,6 +291,8 @@ class MetricsSummaryReporter:
             summary.get("average_latency", 0.0),
             summary.get("failure_rate", 0.0),
             summary.get("throughput_per_minute", 0.0),
+            summary.get("total_requests", 0),
+            summary.get("total_retries", 0),
         )
         gpu = summary.get("gpu_utilization")
         if isinstance(gpu, dict):
@@ -244,6 +302,23 @@ class MetricsSummaryReporter:
                 gpu.get("recent_avg", 0.0),
                 gpu.get("delta", 0.0),
             )
+        per_model = summary.get("per_model")
+        if isinstance(per_model, dict):
+            for model_name, stats in sorted(per_model.items()):
+                self.logger.debug(
+                    (
+                        "Model %s metrics: processed=%s success=%s failed=%s "
+                        "avg_latency=%.2fs failure_rate=%.2f%% requests=%s retries=%s"
+                    ),
+                    model_name,
+                    stats.get("processed", 0),
+                    stats.get("success", 0),
+                    stats.get("failed", 0),
+                    stats.get("average_latency", 0.0),
+                    stats.get("failure_rate", 0.0),
+                    stats.get("total_attempts", 0),
+                    stats.get("total_retries", 0),
+                )
 
     # ------------------------------------------------------------------
     def _write_summary_snapshot(self, summary: Dict[str, object]) -> Path:

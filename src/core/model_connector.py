@@ -158,14 +158,22 @@ class ModelConnector:
 
         try:
             response = requests.post(self.url, json=payload, timeout=self.request_timeout)
-            response.raise_for_status()
-        except Exception as exc:
-            self.logger.error("[%s] HTTP error: %s", self.model, exc)
+        except requests.RequestException as exc:
+            self.logger.error("[%s] HTTP request failed: %s", self.model, exc)
             return None
 
         raw_text = response.text.strip()
         compact_response = raw_text.replace("\n", " ").replace("  ", " ")
         self.logger.debug("RECV ← %s", compact_response)
+
+        if response.status_code >= 400:
+            self.logger.error(
+                "[%s] HTTP error %s: %s",
+                self.model,
+                response.status_code,
+                response.reason,
+            )
+            return None
 
         parsed_entries, content_text = self._extract_response_entries(raw_text)
         if parsed_entries is None:

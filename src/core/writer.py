@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Any, Dict, List, Tuple
 
+from pathlib import Path
+
 from src.util.file_lock import FileLock, FileLockTimeout
 
 
@@ -26,7 +28,7 @@ class ResultWriter:
         lock_stale_seconds: float = 300.0,
         logger=None,
     ) -> None:
-        self.base = base_dir
+        self.base = Path(base_dir)
         self.logger = logger
         self.strategy = strategy.lower()
         self.flush_interval = max(1, flush_interval)
@@ -37,7 +39,7 @@ class ResultWriter:
         self.buffer: List[Tuple[str, str, str, Dict[str, Any]]] = []
         self.last_flush = time.time()
         self.lock = threading.Lock()
-        os.makedirs(base_dir, exist_ok=True)
+        self.base.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     def write(self, id: str, model: str, prompt_hash: str, response: Dict[str, Any]):
@@ -107,24 +109,24 @@ class ResultWriter:
 
     # ------------------------------------------------------------------
     def _write_one(self, id, model, prompt_hash, response):
-        path = os.path.join(self.base, f"{id}.json")
-        tmp = path + ".tmp"
-        lock_path = path + ".lock"
+        path = self.base / f"{id}.json"
+        tmp = path.with_name(path.name + ".tmp")
+        lock_path = path.with_name(path.name + ".lock")
 
         with FileLock(
-            lock_path,
+            str(lock_path),
             timeout=self.lock_timeout,
             poll_interval=self.lock_poll_interval,
             stale_seconds=self.lock_stale_seconds,
         ):
-            data = {"id": id}
+            data = {}
 
-            if os.path.exists(path):
+            if path.exists():
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
+                    with path.open("r", encoding="utf-8") as f:
                         data = json.load(f)
                 except Exception:
-                    data = {"id": id}
+                    data = {}
 
             title = response.get("title", "")
             data["title"] = title
@@ -135,7 +137,7 @@ class ResultWriter:
 
             data.setdefault("llm_models", {}).setdefault(model, {})[prompt_hash] = response
 
-            with open(tmp, "w", encoding="utf-8") as f:
+            with tmp.open("w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 f.write("\n")
             os.replace(tmp, path)

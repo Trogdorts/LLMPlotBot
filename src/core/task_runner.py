@@ -3,6 +3,12 @@
 import threading
 from typing import Dict, List
 
+import threading
+import time
+import logging
+from typing import Dict, List, Tuple
+
+from .metrics import RunnerMetrics
 from .model_connector import ModelConnector
 from .task import Task
 from .writer import ResultWriter
@@ -17,8 +23,8 @@ class TaskRunner:
         connectors: Dict[str, ModelConnector],
         writer: ResultWriter,
         retry_limit: int,
-        shutdown_event,
-        logger,
+        shutdown_event: threading.Event,
+        logger: logging.Logger,
     ) -> None:
         self.tasks_by_model = tasks_by_model
         self.connectors = connectors

@@ -1,5 +1,6 @@
-"""Sequential task runner that orchestrates per-model execution."""
+"""Task runner that orchestrates per-model execution (now concurrent)."""
 
+import threading
 from typing import Dict, List
 
 from .model_connector import ModelConnector
@@ -8,7 +9,7 @@ from .writer import ResultWriter
 
 
 class TaskRunner:
-    """Process tasks sequentially with retries using persistent connector sessions."""
+    """Process tasks per model with retries using persistent connector sessions."""
 
     def __init__(
         self,
@@ -28,7 +29,9 @@ class TaskRunner:
 
     # ------------------------------------------------------------------
     def run(self) -> None:
-        """Run through all tasks for each model sequentially."""
+        """Run through all tasks for each model concurrently."""
+        threads = []
+
         for model, tasks in self.tasks_by_model.items():
             if self.shutdown_event.is_set():
                 break
@@ -37,24 +40,50 @@ class TaskRunner:
                 self.logger.debug("No tasks queued for model %s; skipping.", model)
                 continue
 
-            connector = self.connectors.get(model)
-            if not connector:
+            if model not in self.connectors:
                 self.logger.error("No connector available for model %s", model)
                 continue
 
-            connector.start_session(
-                tasks[0].prompt_dynamic,
-                tasks[0].prompt_formatting,
+            thread = threading.Thread(
+                target=self._run_model_queue,
+                name=f"TaskRunner-{model}",
+                args=(model, tasks),
+                daemon=False,
             )
-            try:
-                self._process_model_tasks(connector, tasks)
-            finally:
-                connector.close_session()
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:
+            thread.join()
 
         if self.shutdown_event.is_set():
             self.logger.info("Task runner halted due to shutdown signal.")
         else:
             self.logger.info("Task runner completed all queued work.")
+
+    # ------------------------------------------------------------------
+    def _run_model_queue(self, model: str, tasks: List[Task]) -> None:
+        if self.shutdown_event.is_set():
+            return
+
+        if not tasks:
+            self.logger.debug("No tasks queued for model %s; skipping.", model)
+            return
+
+        connector = self.connectors.get(model)
+        if not connector:
+            self.logger.error("No connector available for model %s", model)
+            return
+
+        connector.start_session(
+            tasks[0].prompt_dynamic,
+            tasks[0].prompt_formatting,
+        )
+
+        try:
+            self._process_model_tasks(connector, tasks)
+        finally:
+            connector.close_session()
 
     # ------------------------------------------------------------------
     def _process_model_tasks(self, connector: ModelConnector, tasks: List[Task]) -> None:

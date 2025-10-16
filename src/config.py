@@ -1,12 +1,13 @@
-"""Configuration loading with layered override support."""
+"""Configuration management with automatic default creation."""
 
 from __future__ import annotations
 
 import json
 import os
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Iterator, Tuple
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "BASE_DIR": "./data",
@@ -59,35 +60,106 @@ def _write_json(path: Path, data: Dict[str, Any]) -> None:
         handle.write("\n")
 
 
-def _load_override(path: Path) -> Dict[str, Any]:
+def _load_json(path: Path) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     if not isinstance(data, dict):
-        raise ValueError(f"Config override at {path} must contain a JSON object.")
+        raise ValueError(f"Config data at {path} must be a JSON object.")
     return data
 
 
-def _ensure_default_config(
-    config_dir: Path, defaults: Dict[str, Any]
-) -> Tuple[Path, Dict[str, Any]]:
-    config_dir.mkdir(parents=True, exist_ok=True)
-    default_path = config_dir / _DEFAULT_CONFIG_FILENAME
-    base_defaults = deepcopy(defaults)
+def _resolve_project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
-    if default_path.exists():
-        try:
-            stored = _load_override(default_path)
-        except Exception as exc:  # pragma: no cover - defensive error enrichment
-            raise ValueError(
-                f"Unable to load default configuration from {default_path}: {exc}"
-            ) from exc
-        merged = _merge_dicts(base_defaults, stored)
-        if merged != stored:
-            _write_json(default_path, merged)
-        return default_path, merged
 
-    _write_json(default_path, base_defaults)
-    return default_path, base_defaults
+@dataclass(frozen=True)
+class ConfigManager:
+    """Load layered configuration with automatic defaults."""
+
+    defaults: Dict[str, Any]
+    project_root: Path
+    config_dirname: str = _CONFIG_DIRNAME
+    default_filename: str = _DEFAULT_CONFIG_FILENAME
+    override_filenames: Tuple[str, ...] = _OVERRIDE_FILENAMES
+    env_override: str = _ENV_OVERRIDE
+
+    @property
+    def config_dir(self) -> Path:
+        return self.project_root / self.config_dirname
+
+    @property
+    def default_path(self) -> Path:
+        return self.config_dir / self.default_filename
+
+    def ensure_default_config(self) -> Dict[str, Any]:
+        """Make sure the default configuration file exists and is up-to-date."""
+
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        base_defaults = deepcopy(self.defaults)
+
+        if self.default_path.exists():
+            try:
+                stored = _load_json(self.default_path)
+            except Exception as exc:  # pragma: no cover - defensive error enrichment
+                raise ValueError(
+                    f"Unable to load default configuration from {self.default_path}: {exc}"
+                ) from exc
+            merged = _merge_dicts(base_defaults, stored)
+            if merged != stored:
+                _write_json(self.default_path, merged)
+            return merged
+
+        _write_json(self.default_path, base_defaults)
+        return base_defaults
+
+    def _candidate_paths(self, override_paths: Iterable[str] | None) -> Iterator[Path]:
+        if override_paths:
+            for raw_path in override_paths:
+                yield Path(raw_path).expanduser()
+
+        for name in self.override_filenames:
+            yield self.config_dir / name
+
+        for name in self.override_filenames:
+            yield self.project_root / name
+
+        env_path = os.getenv(self.env_override)
+        if env_path:
+            yield Path(env_path).expanduser()
+
+    def load(
+        self,
+        *,
+        override_paths: Iterable[str] | None = None,
+        include_sources: bool = False,
+    ) -> Tuple[Dict[str, Any], Tuple[str, ...]] | Dict[str, Any]:
+        config = deepcopy(self.defaults)
+        default_values = self.ensure_default_config()
+
+        sources: list[str] = []
+        default_resolved = self.default_path.resolve(strict=False)
+        config = _merge_dicts(config, default_values)
+        sources.append(default_resolved.as_posix())
+
+        seen: set[Path] = {default_resolved}
+        for candidate in self._candidate_paths(override_paths):
+            try:
+                resolved = candidate.resolve(strict=False)
+            except Exception:
+                continue
+            if resolved in seen or not candidate.is_file():
+                continue
+            try:
+                overrides = _load_json(candidate)
+            except Exception:
+                continue
+            config = _merge_dicts(config, overrides)
+            sources.append(resolved.as_posix())
+            seen.add(resolved)
+
+        if include_sources:
+            return config, tuple(sources)
+        return config
 
 
 def load_config(
@@ -98,51 +170,20 @@ def load_config(
 ) -> Tuple[Dict[str, Any], Tuple[str, ...]] | Dict[str, Any]:
     """Return configuration merged with user overrides."""
 
-    config = deepcopy(defaults or DEFAULT_CONFIG)
-    sources: list[str] = []
-
-    project_root = Path(__file__).resolve().parents[1]
-    config_dir = project_root / _CONFIG_DIRNAME
-    default_path, default_values = _ensure_default_config(
-        config_dir, defaults or DEFAULT_CONFIG
+    manager = ConfigManager(
+        defaults=deepcopy(defaults or DEFAULT_CONFIG),
+        project_root=_resolve_project_root(),
     )
-    config = _merge_dicts(config, default_values)
-    sources.append(default_path.resolve(strict=False).as_posix())
-
-    search_paths: list[str] = []
-    if override_paths:
-        search_paths.extend(override_paths)
-
-    search_paths.extend(str(config_dir / name) for name in _OVERRIDE_FILENAMES)
-    search_paths.extend(str(project_root / name) for name in _OVERRIDE_FILENAMES)
-
-    env_path = os.getenv(_ENV_OVERRIDE)
-    if env_path:
-        search_paths.append(env_path)
-
-    seen: set[Path] = {default_path.resolve(strict=False)}
-    for raw_path in search_paths:
-        try:
-            candidate = Path(raw_path).expanduser()
-        except Exception:
-            continue
-        resolved = candidate.resolve(strict=False)
-        if resolved in seen or not candidate.is_file():
-            continue
-        try:
-            overrides = _load_override(candidate)
-        except Exception:
-            continue
-        config = _merge_dicts(config, overrides)
-        sources.append(resolved.as_posix())
-        seen.add(resolved)
-
-    if include_sources:
-        return config, tuple(sources)
-    return config
+    return manager.load(override_paths=override_paths, include_sources=include_sources)
 
 
 CONFIG, CONFIG_SOURCES = load_config(include_sources=True)
 
 
-__all__ = ["CONFIG", "CONFIG_SOURCES", "DEFAULT_CONFIG", "load_config"]
+__all__ = [
+    "CONFIG",
+    "CONFIG_SOURCES",
+    "DEFAULT_CONFIG",
+    "ConfigManager",
+    "load_config",
+]

@@ -9,12 +9,13 @@ from statistics import mean, stdev
 from typing import List, Mapping
 
 from src.config import Settings
-from src.core.prompts import hash_prompt, make_structured_prompt
 from src.core.prompting import (
+    build_structured_prompt,
     format_debug_payload,
+    hash_prompt,
+    is_valid_entry,
     iter_first_entry,
-    try_parse_json,
-    validate_entry,
+    parse_json_payload,
 )
 
 
@@ -47,19 +48,13 @@ class BatchStats:
         return stdev(self.timings) if len(self.timings) > 1 else 0.0
 
     def log_summary(self, logger: logging.Logger) -> None:
-        summarize_batch(self, logger=logger)
-
-
-def summarize_batch(stats: BatchStats, *, logger: logging.Logger) -> None:
-    """Log a concise summary of ``stats`` using ``logger``."""
-
-    logger.info("=== BATCH SUMMARY ===")
-    logger.info("Processed: %s", stats.processed)
-    logger.info("Valid JSON: %s (%.1f%%)", stats.valid_json, stats.success_rate)
-    logger.info(
-        "Avg response time: %.2fs (±%.2f)", stats.average_time, stats.std_time
-    )
-    logger.info("=====================\n")
+        logger.info("=== BATCH SUMMARY ===")
+        logger.info("Processed: %s", self.processed)
+        logger.info("Valid JSON: %s (%.1f%%)", self.valid_json, self.success_rate)
+        logger.info(
+            "Avg response time: %.2fs (±%.2f)", self.average_time, self.std_time
+        )
+        logger.info("=====================\n")
 
 
 class BatchTester:
@@ -102,11 +97,11 @@ class BatchTester:
                 title[:80],
             )
 
-            structured_prompt = make_structured_prompt(title)
+            structured_prompt = build_structured_prompt(title)
             response, elapsed = self.connector.send_to_model(structured_prompt, title_id)
             content = self.connector.extract_content(response)
 
-            parsed = try_parse_json(content)
+            parsed = parse_json_payload(content)
             if parsed is not None:
                 self.logger.debug(
                     "Parsed JSON for %s:\n%s",
@@ -115,7 +110,7 @@ class BatchTester:
                 )
 
             valid_entry = next(iter_first_entry(parsed), None)
-            is_valid = bool(valid_entry and validate_entry(valid_entry))
+            is_valid = bool(valid_entry and is_valid_entry(valid_entry))
 
             if is_valid:
                 prompt_hash = hash_prompt(structured_prompt)
@@ -163,4 +158,4 @@ class BatchTester:
         return str(data)
 
 
-__all__ = ["BatchStats", "BatchTester", "summarize_batch"]
+__all__ = ["BatchStats", "BatchTester"]

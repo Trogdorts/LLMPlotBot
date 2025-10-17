@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 import pytest
 
 from src.config import Settings
-from src.core.testing import BatchStats, BatchTester, summarize_batch
+from src.core.testing import BatchTester
 
 
 class StubConnector:
@@ -127,14 +127,3 @@ def test_batch_tester_raises_on_empty_initial_response(settings: Settings) -> No
 
     with pytest.raises(RuntimeError):
         tester.run("prompt", {"story-1": {"title": "Story"}})
-
-
-def test_summarize_batch_uses_logger(settings: Settings, caplog: pytest.LogCaptureFixture) -> None:
-    stats = BatchStats(processed=2, valid_json=1, timings=[0.5, 1.0])
-
-    with caplog.at_level(logging.INFO):
-        summarize_batch(stats, logger=logging.getLogger("test"))
-
-    messages = "\n".join(record.getMessage() for record in caplog.records)
-    assert "Processed: 2" in messages
-    assert "Valid JSON: 1" in messages

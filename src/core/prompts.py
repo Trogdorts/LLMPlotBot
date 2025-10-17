@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 
 
-def make_structured_prompt(title: str) -> str:
+def build_structured_prompt(title: str) -> str:
     """Return the structured prompt sent to the language model."""
 
     return f"""
@@ -35,21 +35,11 @@ Output must start with [ and end with ] and be valid JSON.
 """
 
 
-def build_structured_prompt(title: str) -> str:
-    """Backward compatible alias for :func:`make_structured_prompt`."""
-
-    return make_structured_prompt(title)
-
-
 def hash_prompt(prompt: str) -> str:
     """Generate a stable hash for the given ``prompt``."""
 
     return hashlib.sha1(prompt.encode("utf-8")).hexdigest()
 
 
-__all__ = [
-    "make_structured_prompt",
-    "build_structured_prompt",
-    "hash_prompt",
-]
+__all__ = ["build_structured_prompt", "hash_prompt"]
 

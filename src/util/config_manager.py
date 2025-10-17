@@ -136,10 +136,12 @@ class ConfigManager:
         config = deepcopy(self.defaults)
         config_values = self.ensure_config()
 
-        sources: list[str] = []
         config_resolved = self.config_path.resolve(strict=False)
+        sources: list[str] = [config_resolved.as_posix()]
 
         seen: set[Path] = {config_resolved}
+
+        config = _merge_dicts(config, config_values)
         for candidate in self._candidate_paths(override_paths):
             try:
                 resolved = candidate.resolve(strict=False)
@@ -154,9 +156,6 @@ class ConfigManager:
             config = _merge_dicts(config, overrides)
             sources.append(resolved.as_posix())
             seen.add(resolved)
-
-        config = _merge_dicts(config, config_values)
-        sources.append(config_resolved.as_posix())
 
         if include_sources:
             return config, tuple(sources)

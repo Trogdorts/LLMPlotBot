@@ -3,7 +3,7 @@ import logging
 import requests
 import time
 import random
-from pprint import pprint
+from pprint import pformat
 from pathlib import Path
 from statistics import mean, stdev
 
@@ -69,7 +69,7 @@ def send_to_lm_studio(prompt: str, title_id: str) -> dict:
         return data, elapsed
     except Exception as e:
         logger.error(f"JSON decode error for {title_id}: {e}")
-        print(r.text)
+        logger.debug("Response text:\n%s", r.text)
         raise
 
 
@@ -134,7 +134,7 @@ def main():
 
     if "CONFIRM" not in content.upper():
         logger.warning("CONFIRM not detected. Printing model output:")
-        print(content)
+        logger.info("Model output:\n%s", content)
         return
 
     logger.info("CONFIRM received. Selecting random sample of titles for testing.")
@@ -156,18 +156,18 @@ def main():
         msg = extract_content(resp)
         parsed = try_parse_json(msg)
 
-        print("\n--- RAW RESPONSE ---")
-        print(msg)
-        print("--------------------")
+        logger.info("\n--- RAW RESPONSE ---")
+        logger.info("%s", msg)
+        logger.info("--------------------")
 
-        print("\n--- PARSED JSON ---")
+        logger.info("\n--- PARSED JSON ---")
         if parsed:
-            pprint(parsed, sort_dicts=False)
+            logger.info("%s", pformat(parsed, sort_dicts=False))
             valid_json_count += 1
         else:
             logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
-            print("❌ Invalid JSON returned.")
-        print("--------------------\n")
+            logger.info("❌ Invalid JSON returned.")
+        logger.info("--------------------\n")
 
         times.append(elapsed)
 

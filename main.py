@@ -12,7 +12,7 @@ from src.util.logger_setup import setup_logger
 def main() -> None:
     """Initialise dependencies and execute the batch pipeline."""
 
-    logger = setup_logger(CONFIG["LOG_DIR"], logging.INFO)
+    logger = setup_logger(CONFIG["LOG_DIR"], logging.DEBUG)
     pipeline = BatchProcessingPipeline(
         CONFIG,
         logger=logger,

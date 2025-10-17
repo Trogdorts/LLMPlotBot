@@ -16,7 +16,6 @@ from src.core.prompt_spec import (
 from .path_utils import normalize_for_logging
 
 
-USER_PROMPT_FILENAME = "prompt_user_snippet.txt"
 PROMPT_FILENAME = "prompt.txt"
 PROMPT_ARCHIVE_DIRNAME = "prompts"
 PROMPT_META_FILENAME = "prompt_index.json"
@@ -45,36 +44,6 @@ def _normalise(text: str) -> str:
     if not isinstance(text, str):
         return ""
     return text.replace("\r\n", "\n").replace("\r", "\n").strip()
-
-
-def _ensure_user_prompt(base_dir: str, logger, spec: PromptSpecification) -> str:
-    """Ensure a user-adjustable prompt snippet exists and return its contents."""
-
-    os.makedirs(base_dir, exist_ok=True)
-    user_prompt_path = os.path.join(base_dir, USER_PROMPT_FILENAME)
-
-    if os.path.exists(user_prompt_path):
-        with open(user_prompt_path, "r", encoding="utf-8") as handle:
-            snippet = _normalise(handle.read())
-        if snippet:
-            logger.debug(
-                "Loaded user prompt snippet from %s",
-                normalize_for_logging(user_prompt_path, extra_roots=[base_dir]),
-            )
-            return snippet
-        logger.warning(
-            "User prompt snippet at %s was empty; restoring default instructions.",
-            normalize_for_logging(user_prompt_path, extra_roots=[base_dir]),
-        )
-
-    default_text = spec.default_user_prompt.strip()
-    with open(user_prompt_path, "w", encoding="utf-8") as handle:
-        handle.write(default_text + "\n")
-    logger.info(
-        "Created default user prompt snippet at %s",
-        normalize_for_logging(user_prompt_path, extra_roots=[base_dir]),
-    )
-    return default_text
 
 
 def _write_prompt_files(
@@ -123,7 +92,6 @@ def _write_prompt_files(
         "prompt_hash": prompt_hash,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "prompt_path": prompt_file,
-        "user_prompt_path": os.path.join(base_dir, USER_PROMPT_FILENAME),
         "fields": field_meta,
         "formatting_rules": list(spec.formatting_rules),
         "quality_checks": list(spec.quality_checks),
@@ -137,13 +105,68 @@ def _write_prompt_files(
     )
 
 
+def _split_prompt_sections(prompt_text: str) -> tuple[str, str]:
+    """Split author instructions into dynamic and formatting sections."""
+
+    normalised = _normalise(prompt_text)
+    if not normalised:
+        return "", ""
+
+    markers = (
+        "\n### RESPONSE FORMAT",
+        "\n### Output Format",
+        "\n### OUTPUT RULES",
+        "\nOUTPUT RULES",
+    )
+
+    for marker in markers:
+        index = normalised.find(marker)
+        if index != -1:
+            dynamic = normalised[:index].strip()
+            formatting = normalised[index + 1 :].strip()
+            return dynamic, formatting
+
+    return normalised, ""
+
+
 def load_and_archive_prompt(base_dir: str, logger) -> PromptBundle:
-    """Generate prompt sections from the default specification and persist them."""
+    """Load prompt instructions from disk (or create defaults) and archive them."""
 
     spec = DEFAULT_PROMPT_SPECIFICATION
-    user_snippet = _ensure_user_prompt(base_dir, logger, spec)
-    builder = PromptBuilder(specification=spec, user_prompt=user_snippet)
-    dynamic, formatting, combined = builder.build()
+    os.makedirs(base_dir, exist_ok=True)
+    prompt_path = os.path.join(base_dir, PROMPT_FILENAME)
+
+    prompt_text = ""
+    if os.path.exists(prompt_path):
+        with open(prompt_path, "r", encoding="utf-8") as handle:
+            prompt_text = _normalise(handle.read())
+        if prompt_text:
+            logger.debug(
+                "Loaded prompt instructions from %s",
+                normalize_for_logging(prompt_path, extra_roots=[base_dir]),
+            )
+        else:
+            logger.warning(
+                "Prompt file at %s was empty; recreating defaults.",
+                normalize_for_logging(prompt_path, extra_roots=[base_dir]),
+            )
+
+    if not prompt_text:
+        builder = PromptBuilder(specification=spec)
+        dynamic_default, formatting_default, combined_default = builder.build()
+        prompt_text = combined_default
+        logger.info(
+            "Created default prompt at %s",
+            normalize_for_logging(prompt_path, extra_roots=[base_dir]),
+        )
+        dynamic_section = dynamic_default
+        formatting_section = formatting_default
+    else:
+        dynamic_section, formatting_section = _split_prompt_sections(prompt_text)
+
+    combined = "\n\n".join(
+        section for section in (dynamic_section, formatting_section) if section
+    )
 
     prompt_hash = _short_hash(combined)
     _write_prompt_files(base_dir, combined, prompt_hash, spec, logger)
@@ -151,8 +174,8 @@ def load_and_archive_prompt(base_dir: str, logger) -> PromptBundle:
     return PromptBundle(
         prompt=combined,
         prompt_hash=prompt_hash,
-        dynamic_section=dynamic,
-        formatting_section=formatting,
+        dynamic_section=dynamic_section,
+        formatting_section=formatting_section,
         specification=spec,
     )
 

@@ -1,4 +1,4 @@
-"""High-level orchestration for the LLM batch processing workflow."""
+"""High-level orchestration for the LLM processing workflow."""
 
 from __future__ import annotations
 
@@ -261,12 +261,7 @@ class BatchProcessingPipeline:
         shutdown_event = threading.Event()
         writer = ResultWriter(
             self.config["GENERATED_DIR"],
-            strategy=self.config.get("WRITE_STRATEGY", "immediate"),
-            flush_interval=int(self.config.get("WRITE_BATCH_SIZE", 1) or 1),
-            flush_seconds=float(self.config.get("WRITE_BATCH_SECONDS", 5.0) or 5.0),
-            flush_retry_limit=int(
-                self.config.get("WRITE_BATCH_RETRY_LIMIT", 3) or 3
-            ),
+            retry_limit=int(self.config.get("WRITE_RETRY_LIMIT", 3) or 3),
             lock_timeout=float(self.config.get("FILE_LOCK_TIMEOUT", 10.0) or 10.0),
             lock_poll_interval=float(
                 self.config.get("FILE_LOCK_POLL_INTERVAL", 0.1) or 0.1

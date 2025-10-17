@@ -13,6 +13,7 @@ import requests
 
 from requests import Session
 
+from .prompt_spec import PromptSpecification
 
 def clean_prompt_text(text: str) -> str:
     """Return a single-line version of ``text`` for embedding in prompts."""
@@ -28,19 +29,6 @@ class ModelConnector:
     """Blocking HTTP client that maintains one persistent chat session per model."""
 
     JSON_ONLY_INSTRUCTION = "Return only the JSON object described. No extra text."
-
-    REQUIRED_KEYS = {
-        "core_event",
-        "themes",
-        "tone",
-        "conflict_type",
-        "stakes",
-        "setting_hint",
-        "characters",
-        "potential_story_hooks",
-    }
-
-    LIST_KEYS = {"themes", "characters", "potential_story_hooks"}
 
     _NON_ASCII_RE = re.compile(r"[^\x00-\x7F]+")
     _LANGUAGE_REPLACEMENTS = {
@@ -60,6 +48,8 @@ class ModelConnector:
         compliance_interval: int,
         logger,
         expected_language: str | None = None,
+        *,
+        prompt_spec: PromptSpecification,
     ):
         self.model = model
         self.url = url
@@ -67,6 +57,10 @@ class ModelConnector:
         self.logger = logger
         self.compliance_interval = max(0, int(compliance_interval or 0))
         self.expected_language = (expected_language or "").strip().lower()
+        self._prompt_spec = prompt_spec
+        self._required_keys = prompt_spec.required_field_names
+        self._list_keys = set(prompt_spec.list_field_names)
+        self._ordered_fields = prompt_spec.fields
         self._language_checker = None
         if self.expected_language == "en":
             self._language_checker = self._looks_english
@@ -261,56 +255,7 @@ class ModelConnector:
     def _build_example_output(self, count: int) -> str:
         """Return an example JSON array matching ``count`` headlines."""
 
-        try:
-            total = int(count)
-        except (TypeError, ValueError):
-            total = 1
-        total = max(1, total)
-
-        sample_entries: List[OrderedDict[str, object]] = []
-        for index in range(total):
-            entry_no = index + 1
-            sample_entries.append(
-                OrderedDict(
-                    [
-                        (
-                            "core_event",
-                            f"Example rewritten sentence describing headline {entry_no}.",
-                        ),
-                        (
-                            "themes",
-                            [
-                                f"theme_{entry_no}_a",
-                                f"theme_{entry_no}_b",
-                            ],
-                        ),
-                        ("tone", "example_tone"),
-                        ("conflict_type", "example_conflict"),
-                        (
-                            "stakes",
-                            "Example stakes sentence showing what may change.",
-                        ),
-                        ("setting_hint", f"example setting {entry_no}"),
-                        (
-                            "characters",
-                            [
-                                "example_role_a",
-                                "example_role_b",
-                                "example_role_c",
-                            ],
-                        ),
-                        (
-                            "potential_story_hooks",
-                            [
-                                "example hook idea one",
-                                "example hook idea two",
-                            ],
-                        ),
-                    ]
-                )
-            )
-
-        return json.dumps(sample_entries, ensure_ascii=False, indent=2)
+        return self._prompt_spec.build_example_output(count)
 
     def pop_last_request_error(self) -> Optional[requests.RequestException]:
         """Return and clear the most recent request-level error, if any."""
@@ -452,9 +397,9 @@ class ModelConnector:
         normalized: Dict[str, object] = {}
         missing_keys = []
 
-        for key in self.REQUIRED_KEYS:
+        for key in self._required_keys:
             value = payload.get(key)
-            if key in self.LIST_KEYS:
+            if key in self._list_keys:
                 coerced_list, replaced = self._coerce_to_list(value, key)
                 normalized[key] = coerced_list
             else:
@@ -477,7 +422,7 @@ class ModelConnector:
                 normalized[key] = value
 
         # Final validation to ensure critical fields are non-empty.
-        required_strings = {key for key in self.REQUIRED_KEYS if key not in self.LIST_KEYS}
+        required_strings = {key for key in self._required_keys if key not in self._list_keys}
         for key in required_strings:
             if not isinstance(normalized.get(key), str):
                 self.logger.debug(
@@ -487,7 +432,7 @@ class ModelConnector:
                 )
                 return None
 
-        for key in self.LIST_KEYS:
+        for key in self._list_keys:
             if not isinstance(normalized.get(key), list):
                 self.logger.debug(
                     "[%s] Key '%s' could not be coerced to list.",
@@ -497,8 +442,10 @@ class ModelConnector:
                 return None
 
         ordered = OrderedDict()
-        if "core_event" in normalized:
-            ordered["core_event"] = normalized.pop("core_event")
+        for field in self._ordered_fields:
+            name = field.name
+            if name in normalized:
+                ordered[name] = normalized.pop(name)
         for key in sorted(normalized):
             ordered[key] = normalized[key]
         return ordered

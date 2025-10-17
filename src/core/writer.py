@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -27,7 +28,7 @@ class ResultWriter:
         lock_timeout: float = 10.0,
         lock_poll_interval: float = 0.1,
         lock_stale_seconds: float = 300.0,
-        logger=None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self.base = Path(base_dir)
         self.logger = logger
@@ -44,11 +45,17 @@ class ResultWriter:
         self.base.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
-    def write(self, id: str, model: str, prompt_hash: str, response: Dict[str, Any]):
+    def write(
+        self,
+        title_id: str,
+        model: str,
+        prompt_hash: str,
+        response: Dict[str, Any],
+    ) -> None:
         """Queue a single write and flush based on the configured strategy."""
 
         with self.lock:
-            self.buffer.append((id, model, prompt_hash, response))
+            self.buffer.append((title_id, model, prompt_hash, response))
             if self.strategy == "immediate":
                 self._flush_locked(force=True)
                 return
@@ -88,14 +95,17 @@ class ResultWriter:
         for item in pending:
             grouped.setdefault(item[0], []).append(item)
 
-        for id, records in grouped.items():
+        for title_id, records in grouped.items():
             try:
-                written = self._write_batch(id, records)
+                written = self._write_batch(title_id, records)
             except Exception as exc:  # pragma: no cover - defensive
                 failed.extend(records)
                 if self.logger:
                     self.logger.error(
-                        "Failed to persist batch for %s: %s", id, exc, exc_info=True
+                        "Failed to persist batch for %s: %s",
+                        title_id,
+                        exc,
+                        exc_info=True,
                     )
                 continue
 
@@ -119,7 +129,7 @@ class ResultWriter:
 
     # ------------------------------------------------------------------
     def _write_batch(
-        self, id: str, records: List[Tuple[str, str, str, Dict[str, Any]]]
+        self, title_id: str, records: List[Tuple[str, str, str, Dict[str, Any]]]
     ) -> int:
         """Persist a batch of responses for the same identifier atomically."""
 
@@ -127,7 +137,7 @@ class ResultWriter:
         while attempts_remaining > 0:
             attempts_remaining -= 1
             try:
-                return self._persist_records(id, records)
+                return self._persist_records(title_id, records)
             except FileLockTimeout as exc:
                 if self.logger:
                     self.logger.warning(str(exc))
@@ -140,7 +150,8 @@ class ResultWriter:
                     raise
                 if self.logger:
                     self.logger.warning(
-                        "Retrying batch write for %s due to unexpected error.", id,
+                        "Retrying batch write for %s due to unexpected error.",
+                        title_id,
                         exc_info=True,
                     )
                 time.sleep(min(0.5 * (self.flush_retry_limit - attempts_remaining), 2.0))
@@ -148,9 +159,9 @@ class ResultWriter:
 
     # ------------------------------------------------------------------
     def _persist_records(
-        self, id: str, records: List[Tuple[str, str, str, Dict[str, Any]]]
+        self, title_id: str, records: List[Tuple[str, str, str, Dict[str, Any]]]
     ) -> int:
-        path = self.base / f"{id}.json"
+        path = self.base / f"{title_id}.json"
         tmp = path.with_name(path.name + ".tmp")
         lock_path = path.with_name(path.name + ".lock")
 
@@ -193,7 +204,7 @@ class ResultWriter:
                 ):
                     self.logger.warning(
                         "Conflicting titles for %s; keeping existing value '%s'.",
-                        id,
+                        title_id,
                         chosen_title,
                     )
 
@@ -228,7 +239,7 @@ class ResultWriter:
 
         if self.logger:
             self.logger.debug(
-                "Saved %s batch with %s record(s).", id, len(records)
+                "Saved %s batch with %s record(s).", title_id, len(records)
             )
 
         return len(records)

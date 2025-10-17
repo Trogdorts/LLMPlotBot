@@ -1,16 +1,31 @@
 """Simplified ModelConnector for direct, synchronous calls to LM Studio."""
+
+from __future__ import annotations
+
 import json
 import logging
 import time
+
 import requests
 
 
 class ModelConnector:
-    def __init__(self, model: str, url: str, timeout: int, logger: logging.Logger):
+    def __init__(
+        self,
+        model: str,
+        url: str,
+        timeout: int,
+        logger: logging.Logger,
+        *,
+        compliance_interval: int = 0,
+        expected_language: str | None = None,
+    ):
         self.model = model
         self.url = url
         self.timeout = timeout
         self.logger = logger
+        self.compliance_interval = max(int(compliance_interval or 0), 0)
+        self.expected_language = (expected_language or "en").strip() or "en"
 
     def send_to_model(self, prompt: str, title_id: str):
         payload = {

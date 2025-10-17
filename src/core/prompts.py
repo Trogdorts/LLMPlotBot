@@ -41,5 +41,11 @@ def hash_prompt(prompt: str) -> str:
     return hashlib.sha1(prompt.encode("utf-8")).hexdigest()
 
 
-__all__ = ["build_structured_prompt", "hash_prompt"]
+def make_structured_prompt(title: str) -> str:
+    """Compatibility wrapper for :func:`build_structured_prompt`."""
+
+    return build_structured_prompt(title)
+
+
+__all__ = ["build_structured_prompt", "hash_prompt", "make_structured_prompt"]
 

@@ -53,11 +53,23 @@ def parse_json_payload(text: str) -> Any | None:
         return None
 
 
+def try_parse_json(text: str) -> Any | None:
+    """Compatibility wrapper for :func:`parse_json_payload`."""
+
+    return parse_json_payload(text)
+
+
 def is_valid_entry(entry: dict) -> bool:
     """Perform a quick sanity check on a JSON entry returned by the model."""
 
     required = {"core_event", "themes", "tone"}
     return all(key in entry for key in required)
+
+
+def validate_entry(entry: dict) -> bool:
+    """Compatibility wrapper for :func:`is_valid_entry`."""
+
+    return is_valid_entry(entry)
 
 
 def format_debug_payload(payload: Any) -> str:
@@ -79,7 +91,9 @@ __all__ = [
     "build_structured_prompt",
     "hash_prompt",
     "parse_json_payload",
+    "try_parse_json",
     "is_valid_entry",
+    "validate_entry",
     "format_debug_payload",
     "iter_first_entry",
 ]

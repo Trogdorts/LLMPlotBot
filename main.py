@@ -1,170 +1,58 @@
-import json
 import logging
-import random
-import time
-from pathlib import Path
-from pprint import pformat
-from statistics import mean, stdev
 
+from src.config import load_settings
+from src.core.io import load_prompt, load_titles
 from src.core.model_connector import ModelConnector
+from src.core.testing import BatchTester
 from src.core.writer import ResultWriter
-from src.config import load_config
-
-# ===== CONFIG =====
-LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
-TITLES_PATH = Path("data/titles_index.json")
-PROMPT_PATH = Path("data/prompt.txt")
-MODEL = "creative-writing-model"
-TEST_SAMPLE_SIZE = 10
-CONFIG = load_config()
-GENERATED_DIR = Path(CONFIG["GENERATED_DIR"])
-# ==================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-logger = logging.getLogger("LLMPlotBot")
 
 
-def load_prompt(path: Path) -> str:
-    if not path.exists():
-        raise FileNotFoundError(f"Prompt file not found: {path}")
-    return path.read_text(encoding="utf-8").strip()
+def configure_logging() -> logging.Logger:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+    return logging.getLogger("LLMPlotBot")
 
 
-def load_titles(path: Path) -> dict:
-    if not path.exists():
-        raise FileNotFoundError(f"Title index not found: {path}")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    logger.info(f"Loaded {len(data):,} total title–ID pairs.")
-    return data
+def main() -> None:
+    logger = configure_logging()
+    settings = load_settings()
 
+    prompt = load_prompt(settings.prompt_path, logger=logger)
+    titles = load_titles(settings.titles_path, logger=logger)
 
-def make_structured_prompt(title: str) -> str:
-    return f"""
-You are a story-idea abstraction engine. 
-Fill in the following JSON structure completely based on the given title.
-Write natural, complete, realistic content for every field.
-Return ONLY valid JSON. Do not add commentary, markdown, or explanation.
-
-Title:
-"{title}"
-
-Required output schema:
-[
-  {{
-    "title": "{title}",
-    "core_event": "<one complete rewritten sentence under 50 words>",
-    "themes": ["concept1", "concept2"],
-    "tone": "<stylistic tone label>",
-    "conflict_type": "<short phrase for the central tension>",
-    "stakes": "<one concise sentence of what’s at risk>",
-    "setting_hint": "<short location or situational hint>",
-    "characters": ["role1", "role2"],
-    "potential_story_hooks": ["hook1", "hook2"]
-  }}
-]
-Output must start with [ and end with ] and be valid JSON.
-"""
-
-
-def try_parse_json(text: str):
-    try:
-        return json.loads(text)
-    except Exception:
-        return None
-
-
-def validate_entry(entry: dict) -> bool:
-    """Quick sanity check on a single parsed JSON entry."""
-    required = {"core_event", "themes", "tone"}
-    return all(k in entry for k in required)
-
-
-def summarize_batch(times, valid_json_count, total_count):
-    avg_time = mean(times) if times else 0
-    sd_time = stdev(times) if len(times) > 1 else 0
-    success_rate = (valid_json_count / total_count) * 100 if total_count else 0
-    logger.info("=== BATCH SUMMARY ===")
-    logger.info(f"Processed: {total_count}")
-    logger.info(f"Valid JSON: {valid_json_count} ({success_rate:.1f}%)")
-    logger.info(f"Avg response time: {avg_time:.2f}s (±{sd_time:.2f})")
-    logger.info("=====================\n")
-
-
-def main():
-    prompt = load_prompt(PROMPT_PATH)
-    titles = load_titles(TITLES_PATH)
-    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     writer = ResultWriter(
-        GENERATED_DIR,
-        strategy=CONFIG["WRITE_STRATEGY"],
-        flush_interval=CONFIG["WRITE_BATCH_SIZE"],
-        flush_seconds=CONFIG["WRITE_BATCH_SECONDS"],
-        flush_retry_limit=CONFIG["WRITE_BATCH_RETRY_LIMIT"],
-        lock_timeout=CONFIG["FILE_LOCK_TIMEOUT"],
-        lock_poll_interval=CONFIG["FILE_LOCK_POLL_INTERVAL"],
-        lock_stale_seconds=CONFIG["FILE_LOCK_STALE_SECONDS"],
+        settings.generated_dir,
+        strategy=settings.write_strategy,
+        flush_interval=settings.write_batch_size,
+        flush_seconds=settings.write_batch_seconds,
+        flush_retry_limit=settings.write_batch_retry_limit,
+        lock_timeout=settings.file_lock_timeout,
+        lock_poll_interval=settings.file_lock_poll_interval,
+        lock_stale_seconds=settings.file_lock_stale_seconds,
         logger=logger,
     )
 
     connector = ModelConnector(
-        MODEL,
-        LM_STUDIO_URL,
-        CONFIG["REQUEST_TIMEOUT"],
+        settings.model,
+        settings.lm_studio_url,
+        settings.request_timeout,
         logger,
     )
 
-    logger.info("Sending initialization prompt to LM Studio.")
-    response, _ = connector.send_to_model(prompt, "INIT")
-    content = connector.extract_content(response)
+    tester = BatchTester(
+        settings=settings,
+        connector=connector,
+        writer=writer,
+        logger=logger,
+    )
 
-    if not content or not content.strip():
-        logger.warning("Empty response from model. Aborting.")
-        return
-
-    if not ("CONFIRM" in content.upper() or content.strip().startswith("[")):
-        logger.warning("Initialization message not a confirmation; continuing anyway.")
-        logger.debug("Initialization response:\n%s", content)
-
-    logger.info("CONFIRM received or skipped; proceeding.")
-    sample_keys = random.sample(list(titles.keys()), TEST_SAMPLE_SIZE)
-
-    times, valid_json_count = [], 0
-
-    for i, key in enumerate(sample_keys, start=1):
-        title = titles[key]["title"]
-        logger.info(f"[{i}/{TEST_SAMPLE_SIZE}] {key}: {title[:80]}")
-        structured_prompt = make_structured_prompt(title)
-
-        resp, elapsed = connector.send_to_model(structured_prompt, key)
-        msg = connector.extract_content(resp)
-        parsed = try_parse_json(msg)
-
-        logger.debug("Raw response for %s:\n%s", key, msg)
-        if parsed is not None:
-            logger.debug("Parsed JSON for %s:\n%s", key, pformat(parsed, sort_dicts=False))
-
-        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-            first_entry = parsed[0]
-            if validate_entry(first_entry):
-                writer.write(key, MODEL, "prompt_hash_placeholder", first_entry)
-                valid_json_count += 1
-                logger.info(f"{key}: ✅ Valid JSON saved.")
-            else:
-                logger.warning(f"{key}: JSON missing required fields.")
-        else:
-            logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
-            logger.debug("Invalid JSON payload for %s:\n%s", key, msg)
-
-        times.append(elapsed)
-
-        if i % 10 == 0 or i == TEST_SAMPLE_SIZE:
-            summarize_batch(times, valid_json_count, i)
-        time.sleep(0.5)
-
-    logger.info("=== TEST RUN COMPLETED ===")
+    try:
+        tester.run(prompt, titles)
+    except RuntimeError as exc:
+        logger.error("Batch aborted: %s", exc)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

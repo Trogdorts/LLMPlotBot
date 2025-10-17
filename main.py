@@ -1,9 +1,11 @@
 import json
 import logging
+import math
 import random
 import time
+from collections import Counter
 from pathlib import Path
-from statistics import mean, stdev
+from statistics import mean, median, stdev
 
 from src.config import CONFIG, DEFAULT_CONFIG  # reuse paths if available
 from src.core.model_connector import ModelConnector
@@ -44,17 +46,131 @@ def load_titles(path: Path) -> dict:
     return data
 
 
+def _percentile(values, pct):
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    rank = (len(ordered) - 1) * (pct / 100.0)
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
+    if lower == upper:
+        return float(ordered[int(rank)])
+    lower_val = float(ordered[lower])
+    upper_val = float(ordered[upper])
+    return lower_val + (upper_val - lower_val) * (rank - lower)
 
 
+def _streaks(records):
+    max_success = max_failure = 0
+    current_success = current_failure = 0
+    for record in records:
+        if record["success"]:
+            current_success += 1
+            current_failure = 0
+            max_success = max(max_success, current_success)
+        else:
+            current_failure += 1
+            current_success = 0
+            max_failure = max(max_failure, current_failure)
+    return max_success, max_failure, current_failure
 
-def summarize_batch(times, valid_json_count, total_count):
-    avg_time = mean(times) if times else 0
-    sd_time = stdev(times) if len(times) > 1 else 0
-    success_rate = (valid_json_count / total_count) * 100 if total_count else 0
+
+def summarize_batch(records):
+    total = len(records)
+    latencies = [entry["elapsed"] for entry in records]
+    successes = [entry for entry in records if entry["success"]]
+    failures = [entry for entry in records if not entry["success"]]
+    success_count = len(successes)
+    failure_count = len(failures)
+    success_rate = (success_count / total * 100.0) if total else 0.0
+    avg_time = mean(latencies) if latencies else 0.0
+    sd_time = stdev(latencies) if len(latencies) > 1 else 0.0
+    median_time = median(latencies) if latencies else 0.0
+    min_time = min(latencies) if latencies else 0.0
+    max_time = max(latencies) if latencies else 0.0
+    p90_time = _percentile(latencies, 90)
+    p10_time = _percentile(latencies, 10)
+    recent_window = records[-5:]
+    recent_latencies = [entry["elapsed"] for entry in recent_window]
+    recent_success_rate = (
+        sum(1 for entry in recent_window if entry["success"]) / len(recent_window) * 100.0
+        if recent_window
+        else 0.0
+    )
+    recent_avg_latency = mean(recent_latencies) if recent_latencies else 0.0
+    max_success_streak, max_failure_streak, current_failure_streak = _streaks(records)
+
+    slowest = sorted(records, key=lambda entry: entry["elapsed"], reverse=True)[:3]
+    fastest = sorted(records, key=lambda entry: entry["elapsed"])[:3]
+
+    failure_reasons = Counter(
+        entry["failure_reason"] for entry in failures if entry.get("failure_reason")
+    )
+    title_lengths = [
+        entry["title_length"]
+        for entry in records
+        if entry.get("title_length") is not None
+    ]
+    avg_title_len = mean(title_lengths) if title_lengths else 0.0
+    min_title_len = min(title_lengths) if title_lengths else 0
+    max_title_len = max(title_lengths) if title_lengths else 0
+
     logger.info("=== BATCH SUMMARY ===")
-    logger.info(f"Processed: {total_count}")
-    logger.info(f"Valid JSON: {valid_json_count} ({success_rate:.1f}%)")
-    logger.info(f"Avg response time: {avg_time:.2f}s (±{sd_time:.2f})")
+    logger.info(
+        "Totals    : processed=%d success=%d failures=%d success_rate=%.1f%%",
+        total,
+        success_count,
+        failure_count,
+        success_rate,
+    )
+    logger.info(
+        "Latency   : avg=%.2fs median=%.2fs min=%.2fs max=%.2fs p10=%.2fs p90=%.2fs std=%.2fs",
+        avg_time,
+        median_time,
+        min_time,
+        max_time,
+        p10_time,
+        p90_time,
+        sd_time,
+    )
+    logger.info(
+        "Recent    : window=%d avg=%.2fs success_rate=%.1f%%",
+        len(recent_window),
+        recent_avg_latency,
+        recent_success_rate,
+    )
+    logger.info(
+        "Streaks   : longest_success=%d longest_failure=%d current_failure=%d",
+        max_success_streak,
+        max_failure_streak,
+        current_failure_streak,
+    )
+    if title_lengths:
+        logger.info(
+            "Title len : avg=%.1f chars range=%d-%d",
+            avg_title_len,
+            min_title_len,
+            max_title_len,
+        )
+    if slowest:
+        logger.info(
+            "Slowest   : %s",
+            ", ".join(f"{entry['task_id']} ({entry['elapsed']:.2f}s)" for entry in slowest),
+        )
+    if fastest:
+        logger.info(
+            "Fastest   : %s",
+            ", ".join(f"{entry['task_id']} ({entry['elapsed']:.2f}s)" for entry in fastest),
+        )
+    if failure_reasons:
+        logger.info(
+            "Failures  : %s",
+            ", ".join(
+                f"{reason} x{count}" for reason, count in failure_reasons.most_common()
+            ),
+        )
     logger.info("=====================\n")
 
 
@@ -95,7 +211,7 @@ def main():
         return
     sample_keys = random.sample(list(titles.keys()), TEST_SAMPLE_SIZE)
 
-    times, valid_json_count = [], 0
+    batch_records = []
 
     consecutive_failures = 0
 
@@ -110,32 +226,46 @@ def main():
         logger.debug(f"RECEIVED RAW: {msg}")
         logger.debug(f"RECEIVED PARSED: {parsed}")
 
+        success = False
+        failure_reason = None
+
         if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
             first_entry = parsed[0]
             if validate_entry(first_entry):
                 writer.write(key, MODEL, "prompt_hash_placeholder", first_entry)
-                valid_json_count += 1
+                success = True
                 logger.info(f"{key}: ✅ Valid JSON saved.")
                 consecutive_failures = 0
             else:
                 logger.warning(f"{key}: JSON missing required fields.")
+                failure_reason = "missing_required_fields"
                 consecutive_failures += 1
         else:
             logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
+            failure_reason = "invalid_json"
             consecutive_failures += 1
 
-        times.append(elapsed)
+        batch_records.append(
+            {
+                "task_id": key,
+                "elapsed": elapsed,
+                "success": success,
+                "timestamp": time.time(),
+                "title_length": len(title),
+                "failure_reason": failure_reason,
+            }
+        )
 
         if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
             logger.warning(
                 "Detected %s consecutive JSON failures. Resending instructions...",
                 consecutive_failures,
             )
-            success = resend_instructions("REINSTRUCT")
-            consecutive_failures = 0 if success else consecutive_failures
+            handshake_success = resend_instructions("REINSTRUCT")
+            consecutive_failures = 0 if handshake_success else consecutive_failures
 
         if i % 10 == 0 or i == TEST_SAMPLE_SIZE:
-            summarize_batch(times, valid_json_count, i)
+            summarize_batch(batch_records)
         time.sleep(0.5)
 
     logger.info("=== TEST RUN COMPLETED ===")

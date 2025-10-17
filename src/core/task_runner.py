@@ -483,20 +483,12 @@ class TaskRunner:
                 model_stats.get("queue_duration", 0.0),
             )
 
-        auto_reminders = sum(
-            connector.auto_compliance_reminders for connector in self.connectors.values()
-        )
-        manual_reminders = sum(
-            connector.manual_compliance_reminders for connector in self.connectors.values()
-        )
         array_warnings = sum(
             connector.array_warning_count for connector in self.connectors.values()
         )
 
-        if auto_reminders or manual_reminders or array_warnings:
+        if array_warnings:
             self.logger.info(
-                "Connector signals: auto_reminders=%s manual_reminders=%s multi_object_warnings=%s",
-                auto_reminders,
-                manual_reminders,
+                "Connector signals: multi_object_warnings=%s",
                 array_warnings,
             )

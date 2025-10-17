@@ -85,11 +85,11 @@ class ResultWriter:
         tmp = path.with_name(path.name + ".tmp")
         lock_path = path.with_name(path.name + ".lock")
 
-        prepared_records: List[Tuple[str, str, Dict[str, Any], str]] = []
-        for _, model, prompt_hash, response in records:
-            payload = dict(response)
-            title = str(payload.pop("title", "") or "")
-            prepared_records.append((model, prompt_hash, payload, title))
+        payload = dict(response)
+        title = str(payload.pop("title", "") or "")
+        prepared_records: List[Tuple[str, str, Dict[str, Any], str]] = [
+            (model, prompt_hash, payload, title)
+        ]
 
         def _load_existing(
             target: Path,
@@ -128,7 +128,7 @@ class ResultWriter:
             written = 0
             chosen_title = existing_title
 
-            for model, prompt_hash, payload, title in prepared_records:
+            for record_model, record_prompt_hash, payload, title in prepared_records:
                 if title and not chosen_title:
                     chosen_title = title
                 elif (
@@ -143,12 +143,15 @@ class ResultWriter:
                         chosen_title,
                     )
 
-                model_entry = models_section.setdefault(model, {})
+                model_entry = models_section.setdefault(record_model, {})
                 if not isinstance(model_entry, dict):
                     model_entry = {}
-                    models_section[model] = model_entry
+                    models_section[record_model] = model_entry
 
-            model_entry[prompt_hash] = payload
+                existing_payload = model_entry.get(record_prompt_hash)
+                if existing_payload != payload:
+                    model_entry[record_prompt_hash] = payload
+                    written += 1
 
             if chosen_title:
                 data["title"] = chosen_title
@@ -192,7 +195,7 @@ class ResultWriter:
 
             if self.logger:
                 self.logger.debug(
-                    "Saved %s batch with %s record(s).", id, len(records)
+                    "Saved %s batch with %s record(s).", id, written
                 )
 
             return written

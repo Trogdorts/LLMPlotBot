@@ -3,6 +3,7 @@ import logging
 import random
 import time
 from pathlib import Path
+from pprint import pformat
 from statistics import mean, stdev
 
 from src.core.model_connector import ModelConnector
@@ -142,6 +143,8 @@ def main():
         parsed = try_parse_json(msg)
 
         logger.debug("Raw response for %s:\n%s", key, msg)
+        if parsed is not None:
+            logger.debug("Parsed JSON for %s:\n%s", key, pformat(parsed, sort_dicts=False))
 
         if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
             first_entry = parsed[0]

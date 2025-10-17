@@ -33,6 +33,27 @@ class ExistingResultChecker:
                 )
             return {}
 
+    def record_exists(self, identifier: str) -> bool:
+        """Return ``True`` if a generated JSON record already exists on disk."""
+
+        path = self.base / f"{identifier}.json"
+        return path.exists()
+
+    def has_model_entry(self, identifier: str, model: str) -> bool:
+        """Return ``True`` if ``identifier`` includes any payload for ``model``."""
+
+        record = self._load_record(str(identifier))
+        models: Optional[Dict[str, Any]] = record.get("llm_models")
+        if not isinstance(models, dict):
+            return False
+
+        data = models.get(model)
+        if isinstance(data, dict):
+            return bool(data)
+        if isinstance(data, (list, set, tuple)):
+            return bool(data)
+        return data not in (None, "", False, 0)
+
     def has_entry(self, identifier: str, model: str, prompt_hash: str) -> bool:
         """Return ``True`` if a result already exists for the given key triple."""
 

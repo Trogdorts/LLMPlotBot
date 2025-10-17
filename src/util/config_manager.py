@@ -67,7 +67,9 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
 
 def _resolve_project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    """Return the repository root based on this module's location."""
+
+    return Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)

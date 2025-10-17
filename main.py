@@ -10,7 +10,10 @@ from statistics import mean, median, stdev
 
 from threading import Event
 
-from src.config import CONFIG, DEFAULT_CONFIG  # reuse paths if available
+from src.util.config_manager import (
+    CONFIG,
+    DEFAULT_CONFIG,
+)  # reuse paths if available
 from src.core.model_connector import ModelConnector
 from src.core.writer import ResultWriter
 from src.util.logger_setup import resolve_log_level

@@ -21,7 +21,7 @@ behaviour while preserving the formatting rules appended underneath.
 Model responses are saved immediately to `data/generated_data/`. Writes are
 protected with lock files so that multiple connectors or processes can safely
 write to the same result set. Configure the behaviour via the following keys in
-`src/config.py`:
+`src/util/config_manager.py`:
 
 - `WRITE_RETRY_LIMIT`: number of per-file retry attempts before giving up.
 - `FILE_LOCK_TIMEOUT`, `FILE_LOCK_POLL_INTERVAL`, and
@@ -33,7 +33,7 @@ the structured data returned by the LLM.
 
 ## Configuration and overrides
 
-Defaults live in `src/config.py` and are mirrored into `config/default.json` the
+Defaults live in `src/util/config_manager.py` and are mirrored into `config/default.json` the
 first time the application starts. The loader keeps that file in sync with new
 defaults so you can tweak values without losing upstream changes. Override any
 value by creating a `config/config.local.json` file (preferred), by adding
@@ -85,7 +85,7 @@ archives are stored under the directories referenced in the configuration.
 
 ## Configuring LLMPlotBot
 
-Configuration defaults are defined in `src/config.py` and materialised to
+Configuration defaults are defined in `src/util/config_manager.py` and materialised to
 `config/default.json` the first time you run the application. To customise
 behaviour without modifying tracked files, create a
 `config/config.local.json` file that overrides only the keys you need. The

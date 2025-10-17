@@ -1,81 +1,81 @@
+# main.py
+
 import json
 import logging
-import math
 import random
 import signal
 import time
-from collections import Counter
 from pathlib import Path
-from statistics import mean, median, stdev
-
+from statistics import mean, stdev
 from threading import Event
 
+from src.core.pipeline import BatchProcessingPipeline
 from src.core.model_connector import ModelConnector
-from src.core.writer import ResultWriter  # <-- reattached
-from src.util.config_manager import CONFIG, DEFAULT_CONFIG     # reuse paths if available
+from src.core.writer import ResultWriter
+from src.util.config_manager import CONFIG, CONFIG_SOURCES, DEFAULT_CONFIG
 from src.util.logger_setup import resolve_log_level
-from src.util.prompt_utils import load_prompt, make_structured_prompt, try_parse_json, validate_entry
+from src.util.prompt_utils import (
+    load_prompt,
+    make_structured_prompt,
+    try_parse_json,
+    validate_entry,
+)
 
-# ===== CONFIG =====
-LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
+# ---------- Static paths ----------
 TITLES_PATH = Path("data/titles_index.json")
 PROMPT_PATH = Path("data/prompt.txt")
-MODEL = "creative-writing-model"
-TEST_SAMPLE_SIZE = 10
-CONSECUTIVE_FAILURE_LIMIT = 3
-GENERATED_DIR = Path(DEFAULT_CONFIG["GENERATED_DIR"])
-# ==================
 
-logging.basicConfig(
-    level=resolve_log_level(CONFIG.get("LOG_LEVEL"), default=logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+# ---------- Derived config ----------
+LOG_LEVEL = resolve_log_level(CONFIG.get("LOG_LEVEL"), default=logging.INFO)
+GENERATED_DIR = Path(CONFIG.get("GENERATED_DIR", DEFAULT_CONFIG["GENERATED_DIR"]))
+REQUEST_TIMEOUT = int(CONFIG.get("REQUEST_TIMEOUT", 90))
+TEST_LIMIT = int(CONFIG.get("TEST_LIMIT_PER_MODEL", 10))
+
+# Prefer configured model; fallback to explicit name
+_cfg_models = CONFIG.get("LLM_MODELS") or []
+if isinstance(_cfg_models, str):
+    _cfg_models = [m.strip() for m in _cfg_models.split(",") if m.strip()]
+MODEL = (_cfg_models[0] if _cfg_models else "creative-writing-model")
+
+# Prefer configured base URL; fallback to localhost
+LM_STUDIO_URL = f"{CONFIG.get('LLM_BASE_URL', 'http://localhost:1234')}/v1/chat/completions"
+
+
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("LLMPlotBot")
 
 
 def _install_signal_handlers(stop_event: Event):
-    """Install signal handlers that request a graceful shutdown."""
-
-    handled_signals = []
+    handled = []
     for name in ("SIGINT", "SIGTERM", "SIGHUP"):
         signum = getattr(signal, name, None)
         if signum is None:
             continue
         try:
-            previous = signal.getsignal(signum)
-            signal.signal(
-                signum,
-                lambda s, f, *, _prev=previous: _handle_signal(s, f, stop_event, _prev),
-            )
-        except (ValueError, OSError):  # pragma: no cover - platform differences
+            prev = signal.getsignal(signum)
+            signal.signal(signum, lambda s, f, _prev=prev: _handle_signal(s, f, stop_event, _prev))
+        except (ValueError, OSError):
             continue
-        else:
-            handled_signals.append((signum, previous))
-
+        handled.append((signum, prev))
     def restore():
-        for signum, previous in handled_signals:
+        for signum, prev in handled:
             try:
-                signal.signal(signum, previous)
-            except (ValueError, OSError):  # pragma: no cover - platform differences
-                continue
-
+                signal.signal(signum, prev)
+            except (ValueError, OSError):
+                pass
     return restore
 
 
 def _handle_signal(signum, frame, stop_event: Event, previous_handler):
-    """Shared logic for installed signal handlers."""
-
     if not stop_event.is_set():
         try:
             name = signal.Signals(signum).name
-        except ValueError:  # pragma: no cover - defensive
+        except ValueError:
             name = str(signum)
         logger.info("Received %s; requesting graceful shutdown.", name)
     stop_event.set()
-
     if signum == getattr(signal, "SIGINT", None):
         raise KeyboardInterrupt
-
     if callable(previous_handler):
         previous_handler(signum, frame)
 
@@ -84,277 +84,106 @@ def load_titles(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"Title index not found: {path}")
     data = json.loads(path.read_text(encoding="utf-8"))
-    logger.info(f"Loaded {len(data):,} total title–ID pairs.")
+    logger.info("Loaded %,d total title–ID pairs.", len(data))
     return data
 
 
-def _percentile(values, pct):
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return float(ordered[0])
-    rank = (len(ordered) - 1) * (pct / 100.0)
-    lower = math.floor(rank)
-    upper = math.ceil(rank)
-    if lower == upper:
-        return float(ordered[int(rank)])
-    lower_val = float(ordered[lower])
-    upper_val = float(ordered[upper])
-    return lower_val + (upper_val - lower_val) * (rank - lower)
-
-
-def _streaks(records):
-    max_success = max_failure = 0
-    current_success = current_failure = 0
-    for record in records:
-        if record["success"]:
-            current_success += 1
-            current_failure = 0
-            max_success = max(max_success, current_success)
-        else:
-            current_failure += 1
-            current_success = 0
-            max_failure = max(max_failure, current_failure)
-    return max_success, max_failure, current_failure
-
-
-def summarize_batch(records):
-    total = len(records)
-    latencies = [entry["elapsed"] for entry in records]
-    successes = [entry for entry in records if entry["success"]]
-    failures = [entry for entry in records if not entry["success"]]
-    success_count = len(successes)
-    failure_count = len(failures)
-    success_rate = (success_count / total * 100.0) if total else 0.0
-    avg_time = mean(latencies) if latencies else 0.0
-    sd_time = stdev(latencies) if len(latencies) > 1 else 0.0
-    median_time = median(latencies) if latencies else 0.0
-    min_time = min(latencies) if latencies else 0.0
-    max_time = max(latencies) if latencies else 0.0
-    p90_time = _percentile(latencies, 90)
-    p10_time = _percentile(latencies, 10)
-    recent_window = records[-5:]
-    recent_latencies = [entry["elapsed"] for entry in recent_window]
-    recent_success_rate = (
-        sum(1 for entry in recent_window if entry["success"]) / len(recent_window) * 100.0
-        if recent_window
-        else 0.0
-    )
-    recent_avg_latency = mean(recent_latencies) if recent_latencies else 0.0
-    max_success_streak, max_failure_streak, current_failure_streak = _streaks(records)
-
-    slowest = sorted(records, key=lambda entry: entry["elapsed"], reverse=True)[:3]
-    fastest = sorted(records, key=lambda entry: entry["elapsed"])[:3]
-
-    failure_reasons = Counter(
-        entry["failure_reason"] for entry in failures if entry.get("failure_reason")
-    )
-    title_lengths = [
-        entry["title_length"]
-        for entry in records
-        if entry.get("title_length") is not None
-    ]
-    avg_title_len = mean(title_lengths) if title_lengths else 0.0
-    min_title_len = min(title_lengths) if title_lengths else 0
-    max_title_len = max(title_lengths) if title_lengths else 0
-
+def summarize_batch(times, valid_json_count, total_count):
+    avg_time = mean(times) if times else 0.0
+    sd_time = stdev(times) if len(times) > 1 else 0.0
+    success_rate = (valid_json_count / total_count) * 100.0 if total_count else 0.0
     logger.info("=== BATCH SUMMARY ===")
-    logger.info(
-        "Totals    : processed=%d success=%d failures=%d success_rate=%.1f%%",
-        total,
-        success_count,
-        failure_count,
-        success_rate,
-    )
-    logger.info(
-        "Latency   : avg=%.2fs median=%.2fs min=%.2fs max=%.2fs p10=%.2fs p90=%.2fs std=%.2fs",
-        avg_time,
-        median_time,
-        min_time,
-        max_time,
-        p10_time,
-        p90_time,
-        sd_time,
-    )
-    logger.info(
-        "Recent    : window=%d avg=%.2fs success_rate=%.1f%%",
-        len(recent_window),
-        recent_avg_latency,
-        recent_success_rate,
-    )
-    logger.info(
-        "Streaks   : longest_success=%d longest_failure=%d current_failure=%d",
-        max_success_streak,
-        max_failure_streak,
-        current_failure_streak,
-    )
-    if title_lengths:
-        logger.info(
-            "Title len : avg=%.1f chars range=%d-%d",
-            avg_title_len,
-            min_title_len,
-            max_title_len,
-        )
-    if slowest:
-        logger.info(
-            "Slowest   : %s",
-            ", ".join(f"{entry['task_id']} ({entry['elapsed']:.2f}s)" for entry in slowest),
-        )
-    if fastest:
-        logger.info(
-            "Fastest   : %s",
-            ", ".join(f"{entry['task_id']} ({entry['elapsed']:.2f}s)" for entry in fastest),
-        )
-    if failure_reasons:
-        logger.info(
-            "Failures  : %s",
-            ", ".join(
-                f"{reason} x{count}" for reason, count in failure_reasons.most_common()
-            ),
-        )
+    logger.info("Processed: %d", total_count)
+    logger.info("Valid JSON: %d (%.1f%%)", valid_json_count, success_rate)
+    logger.info("Avg response time: %.2fs (±%.2f)", avg_time, sd_time)
     logger.info("=====================\n")
 
 
 def main():
-    prompt = load_prompt(PROMPT_PATH)
-    titles = load_titles(TITLES_PATH)
-    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    writer = ResultWriter(GENERATED_DIR, logger=logger)
+    # Pipeline path when not testing
+    if not bool(CONFIG.get("TEST_MODE")):
+        logger.info("TEST_MODE is false. Running full pipeline.")
+        logger.info("Loaded config sources: %s", ", ".join(CONFIG_SOURCES))
+        pipeline = BatchProcessingPipeline(dict(CONFIG), logger=logger, config_sources=CONFIG_SOURCES)
+        pipeline.run()
+        return
 
-    connector = ModelConnector(MODEL, LM_STUDIO_URL, 90, logger)
-
+    # Test harness path
     stop_event = Event()
     restore_signals = _install_signal_handlers(stop_event)
 
-    def resend_instructions(tag: str) -> bool:
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    writer = ResultWriter(
+        str(GENERATED_DIR),
+        strategy=str(CONFIG.get("WRITE_STRATEGY", "immediate")),
+        flush_interval=int(CONFIG.get("WRITE_BATCH_SIZE", 25)),
+        flush_seconds=float(CONFIG.get("WRITE_BATCH_SECONDS", 5.0)),
+        flush_retry_limit=int(CONFIG.get("WRITE_BATCH_RETRY_LIMIT", 3)),
+        lock_timeout=float(CONFIG.get("FILE_LOCK_TIMEOUT", 10.0)),
+        lock_poll_interval=float(CONFIG.get("FILE_LOCK_POLL_INTERVAL", 0.1)),
+        lock_stale_seconds=float(CONFIG.get("FILE_LOCK_STALE_SECONDS", 300.0)),
+        logger=logger,
+    )
+
+    prompt = load_prompt(PROMPT_PATH)
+    titles = load_titles(TITLES_PATH)
+
+    connector = ModelConnector(MODEL, LM_STUDIO_URL, REQUEST_TIMEOUT, logger)
+
+    logger.info("Sending initialization prompt to LM Studio. [INIT]")
+    init_resp, _ = connector.send_to_model(prompt, "INIT")
+    init_content = connector.extract_content(init_resp)
+    logger.info("Instructions acknowledged on INIT.")
+
+    if not init_content or not init_content.strip():
+        logger.warning("Empty response from model. Aborting.")
+        return
+    if not ("CONFIRM" in init_content.upper() or init_content.strip().startswith("[")):
+        logger.warning("Initialization message not a confirmation; continuing anyway.")
+        print(init_content)
+
+    keys = list(titles.keys())
+    sample_n = min(TEST_LIMIT, len(keys))
+    sample_keys = random.sample(keys, sample_n)
+    times = []
+    valid_json_count = 0
+
+    for i, key in enumerate(sample_keys, start=1):
         if stop_event.is_set():
-            logger.info("Skipping %s instruction resend due to shutdown request.", tag)
-            return False
-        logger.info("Sending initialization prompt to LM Studio. [%s]", tag)
-        try:
-            response, _ = connector.send_to_model(prompt, tag)
-        except Exception:
-            logger.exception("Failed to deliver instructions on %s.", tag)
-            return False
+            logger.info("Shutdown requested. Stopping test harness.")
+            break
 
-        content = connector.extract_content(response)
+        title = titles[key]["title"]
+        logger.info("[%d/%d] %s: %s", i, sample_n, key, title[:80])
 
-        if not content or not content.strip():
-            logger.warning("Empty response from model when sending %s instructions.", tag)
-            return False
+        structured_prompt = make_structured_prompt(title)
+        resp, elapsed = connector.send_to_model(structured_prompt, key)
+        msg = connector.extract_content(resp)
+        parsed = try_parse_json(msg)
 
-        if not ("CONFIRM" in content.upper() or content.strip().startswith("[")):
-            logger.warning(
-                "Instruction acknowledgement unexpected on %s; continuing anyway. Raw Content: %s",
-                tag,
-                content,
-            )
+        print("\n--- RAW RESPONSE ---")
+        print(msg)
+        print("--------------------")
+
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and validate_entry(parsed[0]):
+            writer.write(key, MODEL, "prompt_hash_placeholder", parsed[0])
+            valid_json_count += 1
+            logger.info("%s: ✅ Valid JSON saved.", key)
         else:
-            logger.info("Instructions acknowledged on %s.", tag)
-        return True
+            logger.warning("%s: Invalid or incomplete JSON after %.2fs.", key, elapsed)
+            print("❌ Invalid JSON returned.")
+        print("--------------------\n")
 
-    try:
-        if not resend_instructions("INIT"):
-            logger.warning("Initial instruction handshake failed; aborting run.")
-            return
-        sample_keys = random.sample(list(titles.keys()), TEST_SAMPLE_SIZE)
+        times.append(elapsed)
 
-        batch_records = []
-        last_summary_size = 0
+        if i % 10 == 0 or i == sample_n:
+            summarize_batch(times, valid_json_count, i)
 
-        consecutive_failures = 0
+        time.sleep(0.5)
 
-        for i, key in enumerate(sample_keys, start=1):
-            if stop_event.is_set():
-                logger.info("Shutdown requested; stopping before processing remaining tasks.")
-                break
-
-            title = titles[key]["title"]
-            logger.info(f"[{i}/{TEST_SAMPLE_SIZE}] {key}: {title[:80]}")
-            structured_prompt = make_structured_prompt(title)
-
-            success = False
-            failure_reason = None
-            elapsed = 0.0
-
-            try:
-                resp, elapsed = connector.send_to_model(structured_prompt, key)
-                msg = connector.extract_content(resp)
-                parsed = try_parse_json(msg)
-                logger.debug(f"RECEIVED RAW: {msg}")
-                logger.debug(f"RECEIVED PARSED: {parsed}")
-            except KeyboardInterrupt:
-                logger.info("Keyboard interrupt received; finalizing run.")
-                stop_event.set()
-                break
-            except Exception:
-                logger.exception("Unexpected error while processing %s.", key)
-                failure_reason = "unexpected_exception"
-                consecutive_failures += 1
-            else:
-                if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-                    first_entry = parsed[0]
-                    if validate_entry(first_entry):
-                        writer.write(key, MODEL, "prompt_hash_placeholder", first_entry)
-                        success = True
-                        logger.info(f"{key}: ✅ Valid JSON saved.")
-                        consecutive_failures = 0
-                    else:
-                        logger.warning(f"{key}: JSON missing required fields.")
-                        failure_reason = "missing_required_fields"
-                        consecutive_failures += 1
-                else:
-                    logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
-                    failure_reason = "invalid_json"
-                    consecutive_failures += 1
-
-            if failure_reason and not success:
-                logger.debug("%s marked as failure due to %s.", key, failure_reason)
-
-            batch_records.append(
-                {
-                    "task_id": key,
-                    "elapsed": elapsed,
-                    "success": success,
-                    "timestamp": time.time(),
-                    "title_length": len(title),
-                    "failure_reason": failure_reason,
-                }
-            )
-
-            if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
-                logger.warning(
-                    "Detected %s consecutive JSON failures. Resending instructions...",
-                    consecutive_failures,
-                )
-                handshake_success = resend_instructions("REINSTRUCT")
-                consecutive_failures = 0 if handshake_success else consecutive_failures
-
-            if i % 10 == 0 or i == TEST_SAMPLE_SIZE:
-                summarize_batch(batch_records)
-                last_summary_size = len(batch_records)
-
-            if stop_event.is_set():
-                logger.info("Shutdown requested; ending loop before delay.")
-                break
-            time.sleep(0.5)
-
-        if batch_records and last_summary_size != len(batch_records):
-            summarize_batch(batch_records)
-        logger.info("=== TEST RUN COMPLETED ===")
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received outside main loop; shutting down.")
-    finally:
-        stop_event.set()
-        try:
-            restore_signals()
-        finally:
-            try:
-                writer.flush()
-            finally:
-                connector.shutdown()
-        logger.info("Resources cleaned up. Exiting.")
+    writer.flush()
+    restore_signals()
+    logger.info("=== TEST RUN COMPLETED ===")
 
 
 if __name__ == "__main__":

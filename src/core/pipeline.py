@@ -1,12 +1,10 @@
-"""High-level orchestration for the LLM processing workflow."""
+"""High-level orchestration for the LLM batch processing workflow."""
 
 from __future__ import annotations
-
 import logging
 import os
 import threading
 import time
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Dict, Iterable, MutableMapping
 
@@ -14,12 +12,11 @@ from src.core.batch_planner import BatchPlan, BatchPlanner
 from src.core.metrics_collector import MetricsCollector
 from src.core.metrics_summary import MetricsSummaryReporter
 from src.core.model_connector import ModelConnector
-from src.core.prompt_spec import PromptSpecification
 from src.core.shutdown import ShutdownManager
 from src.core.task_runner import TaskRunner
 from src.core.writer import ResultWriter
 from src.util.backup_utils import create_backup
-from src.util.lmstudio_models import get_model_keys, group_model_keys
+from src.util.lmstudio_models import get_model_keys
 from src.util.prompt_utils import PromptBundle, load_and_archive_prompt
 from src.util.result_utils import ExistingResultChecker
 from src.util.utils_io import build_cache, load_cache
@@ -27,7 +24,7 @@ from src.util.utils_io import build_cache, load_cache
 
 @dataclass(slots=True)
 class PipelineDependencies:
-    """Bundle of already-configured helper objects."""
+    """Bundle of initialized helper objects."""
 
     writer: ResultWriter
     metrics_collector: MetricsCollector
@@ -52,6 +49,7 @@ class BatchProcessingPipeline:
 
     # ------------------------------------------------------------------
     def run(self) -> bool:
+        """Main entry point for full pipeline execution."""
         self._log_startup()
 
         endpoints = self._resolve_model_endpoints()
@@ -72,10 +70,7 @@ class BatchProcessingPipeline:
         self._current_prompt_hash = prompt_hash
         self.logger.info("Active prompt hash: %s", prompt_hash)
 
-        result_checker = ExistingResultChecker(
-            self.config["GENERATED_DIR"], self.logger
-        )
-
+        result_checker = ExistingResultChecker(self.config["GENERATED_DIR"], self.logger)
         titles = self._filter_titles_for_run(titles, result_checker, endpoints.keys())
         if not titles:
             self.logger.warning(
@@ -110,12 +105,12 @@ class BatchProcessingPipeline:
             return False
 
         tasks_by_model = plan.tasks_by_model
-
         active_endpoints = {
             model: endpoints[model]
             for model in tasks_by_model
             if model in endpoints
         }
+
         missing_endpoints = set(tasks_by_model) - set(active_endpoints)
         if missing_endpoints:
             self.logger.error(
@@ -123,8 +118,9 @@ class BatchProcessingPipeline:
                 ", ".join(sorted(missing_endpoints)),
             )
             return False
+
         deps = self._build_dependencies()
-        connectors = self._create_connectors(active_endpoints, prompt_bundle.specification)
+        connectors = self._create_connectors(active_endpoints)
 
         runner = TaskRunner(
             tasks_by_model,
@@ -158,17 +154,16 @@ class BatchProcessingPipeline:
     # ------------------------------------------------------------------
     def _filter_titles_for_run(
         self,
-        titles: Mapping[str, Mapping[str, object]],
+        titles,
         result_checker: ExistingResultChecker,
         models: Iterable[str],
-    ) -> Mapping[str, Mapping[str, object]]:
+    ):
         """Remove titles that already have generated output when not testing."""
-
         if self.config.get("TEST_MODE"):
             return titles
 
         active_models = tuple(models)
-        filtered: Dict[str, Mapping[str, object]] = {}
+        filtered = {}
         skipped_existing = 0
         skipped_by_model = 0
 
@@ -192,9 +187,7 @@ class BatchProcessingPipeline:
             if skipped_existing:
                 details.append(f"{skipped_existing} with existing JSON files")
             if skipped_by_model:
-                details.append(
-                    f"{skipped_by_model} with entries for active model(s)"
-                )
+                details.append(f"{skipped_by_model} with entries for active model(s)")
             detail_msg = "; ".join(details)
             self.logger.info(
                 "Skipping %s title(s) that already have generated output (%s).",
@@ -203,6 +196,55 @@ class BatchProcessingPipeline:
             )
 
         return filtered
+
+    # ------------------------------------------------------------------
+    def _build_dependencies(self) -> PipelineDependencies:
+        """Construct shared helper objects and dependencies."""
+        writer = ResultWriter(
+            self.config["GENERATED_DIR"],
+            strategy=self.config.get("WRITE_STRATEGY", "immediate"),
+            flush_interval=self.config.get("WRITE_BATCH_SIZE", 1),
+            flush_seconds=self.config.get("WRITE_BATCH_SECONDS", 5.0),
+            flush_retry_limit=self.config.get("WRITE_BATCH_RETRY_LIMIT", 3),
+            lock_timeout=self.config.get("FILE_LOCK_TIMEOUT", 10.0),
+            lock_poll_interval=self.config.get("FILE_LOCK_POLL_INTERVAL", 0.1),
+            lock_stale_seconds=self.config.get("FILE_LOCK_STALE_SECONDS", 300.0),
+            logger=self.logger,
+        )
+
+        metrics_collector = MetricsCollector()
+        summary_task_interval = int(self.config.get("METRICS_SUMMARY_TASK_INTERVAL", 0) or 0)
+        summary_time_seconds = float(
+            self.config.get(
+                "METRICS_SUMMARY_TIME_SECONDS",
+                self.config.get("SUMMARY_INTERVAL", 0.0),
+            )
+            or 0.0
+        )
+
+        summary_reporter = MetricsSummaryReporter(
+            metrics_collector,
+            self.logger,
+            self.config["LOG_DIR"],
+            summary_every_tasks=summary_task_interval,
+            summary_every_seconds=summary_time_seconds,
+        )
+        summary_reporter.start()
+
+        shutdown_event = threading.Event()
+        ShutdownManager(
+            shutdown_event,
+            writer,
+            self.logger,
+            summary_reporter=summary_reporter,
+        ).register()
+
+        return PipelineDependencies(
+            writer=writer,
+            metrics_collector=metrics_collector,
+            summary_reporter=summary_reporter,
+            shutdown_event=shutdown_event,
+        )
 
     # ------------------------------------------------------------------
     def _log_startup(self) -> None:
@@ -214,222 +256,84 @@ class BatchProcessingPipeline:
 
     # ------------------------------------------------------------------
     def _resolve_model_endpoints(self) -> Dict[str, str]:
-        config = self.config
+        """Resolve LM Studio model endpoints."""
+        base_url = str(self.config.get("LLM_BASE_URL", "http://localhost:1234")).rstrip("/")
+        configured_models = self.config.get("LLM_MODELS") or []
 
-        def _normalise_names(raw: object) -> list[str]:
-            if isinstance(raw, str):
-                items = [part.strip() for part in raw.split(",")]
-            elif isinstance(raw, (list, tuple, set)):
-                items = [str(part).strip() for part in raw]
-            else:
-                return []
-            return [item for item in items if item]
-
-        blocklist = {name.lower() for name in _normalise_names(config.get("LLM_BLOCKLIST", []))}
-        preconfigured = config.get("LLM_ENDPOINTS") or {}
-        if preconfigured:
-            filtered = {
-                model: url
-                for model, url in dict(preconfigured).items()
-                if model and model.lower() not in blocklist
-            }
-            if not filtered:
-                self.logger.error(
-                    "All configured LLM endpoints were filtered by LLM_BLOCKLIST."
-                )
-                return {}
-            if len(filtered) != len(preconfigured):
-                removed = sorted(set(preconfigured) - set(filtered))
-                self.logger.warning(
-                    "Excluding %s blocklisted model(s): %s",
-                    len(removed),
-                    ", ".join(removed),
-                )
-            self.logger.info(
-                "Using pre-configured LLM endpoints for %s model(s).", len(filtered)
-            )
-            self.logger.debug("Pre-configured endpoints: %s", filtered)
-            return filtered
-
-        base_url = str(config.get("LLM_BASE_URL", "http://localhost:1234"))
-        configured_models = _normalise_names(config.get("LLM_MODELS", []))
+        if isinstance(configured_models, str):
+            configured_models = [m.strip() for m in configured_models.split(",") if m.strip()]
 
         if configured_models:
-            self.logger.info(
-                "Using explicitly configured LLM models: %s",
-                ", ".join(configured_models),
-            )
-            candidate_models = configured_models
+            self.logger.info("Using explicitly configured models: %s", ", ".join(configured_models))
+            models = configured_models
         else:
             detected = get_model_keys(self.logger)
             if not detected:
-                self.logger.error(
-                    "No running LM Studio models detected and no models configured."
-                )
+                self.logger.error("No running LM Studio models detected.")
                 return {}
-            self.logger.info(
-                "Detected running LM Studio models: %s", ", ".join(detected)
-            )
+            self.logger.info("Detected running LM Studio models: %s", ", ".join(detected))
+            models = detected
 
-            grouped = group_model_keys(detected)
-            duplicates = {base: keys for base, keys in grouped.items() if len(keys) > 1}
-            if duplicates:
-                duplicate_summary = ", ".join(
-                    f"{base} ×{len(keys)}" for base, keys in duplicates.items()
-                )
-                self.logger.info("Detected multi-instance models: %s", duplicate_summary)
-            candidate_models = detected
-
-        filtered_models = [
-            model for model in candidate_models if model.lower() not in blocklist
-        ]
-        if not filtered_models:
-            self.logger.error("No models available after applying LLM_BLOCKLIST filters.")
-            return {}
-
-        removed = sorted(set(candidate_models) - set(filtered_models))
-        if removed:
-            self.logger.warning(
-                "Excluding %s blocklisted model(s): %s",
-                len(removed),
-                ", ".join(removed),
-            )
-
-        return {
-            model: f"{base_url}/v1/chat/completions" for model in filtered_models
-        }
+        endpoints = {model: f"{base_url}/v1/chat/completions" for model in models}
+        self.logger.debug("Resolved endpoints: %s", endpoints)
+        return endpoints
 
     # ------------------------------------------------------------------
     def _prepare_directories(self) -> None:
         os.makedirs(self.config["GENERATED_DIR"], exist_ok=True)
-        create_backup(
-            self.config["BACKUP_DIR"],
-            self.config.get("IGNORE_FOLDERS", []),
-            self.logger,
-        )
+        create_backup(self.config["BACKUP_DIR"], self.config["IGNORE_FOLDERS"], self.logger)
 
     # ------------------------------------------------------------------
-    def _load_titles(self) -> Mapping[str, Mapping[str, object]]:
-        cache_file = os.path.join(self.config["BASE_DIR"], "titles_index.json")
-        self.config["CACHE_PATH"] = cache_file
+    def _load_titles(self):
+        cache_path = os.path.join(self.config["BASE_DIR"], "titles_index.json")
+        self.config["CACHE_PATH"] = cache_path
         titles = load_cache(self.config, self.logger)
         if titles is None:
             titles = build_cache(self.config, self.logger)
-        return titles or {}
+        return titles
 
     # ------------------------------------------------------------------
     def _load_prompt(self) -> PromptBundle:
         return load_and_archive_prompt(self.config["BASE_DIR"], self.logger)
 
     # ------------------------------------------------------------------
-    def _build_dependencies(self) -> PipelineDependencies:
-        shutdown_event = threading.Event()
-        writer = ResultWriter(
-            self.config["GENERATED_DIR"],
-            retry_limit=int(self.config.get("WRITE_RETRY_LIMIT", 3) or 3),
-            lock_timeout=float(self.config.get("FILE_LOCK_TIMEOUT", 10.0) or 10.0),
-            lock_poll_interval=float(
-                self.config.get("FILE_LOCK_POLL_INTERVAL", 0.1) or 0.1
-            ),
-            lock_stale_seconds=float(
-                self.config.get("FILE_LOCK_STALE_SECONDS", 300.0) or 300.0
-            ),
-            logger=self.logger,
-        )
-        metrics_collector = MetricsCollector()
-        summary_reporter = MetricsSummaryReporter(
-            metrics_collector,
-            self.logger,
-            self.config["LOG_DIR"],
-            summary_every_tasks=int(
-                self.config.get("METRICS_SUMMARY_TASK_INTERVAL", 0) or 0
-            ),
-            summary_every_seconds=float(
-                self.config.get("METRICS_SUMMARY_TIME_SECONDS",
-                                self.config.get("SUMMARY_INTERVAL", 0.0))
-                or 0.0
-            ),
-        )
-        summary_reporter.start()
-        ShutdownManager(
-            shutdown_event,
-            writer,
-            self.logger,
-            summary_reporter=summary_reporter,
-        ).register()
-        return PipelineDependencies(
-            writer=writer,
-            metrics_collector=metrics_collector,
-            summary_reporter=summary_reporter,
-            shutdown_event=shutdown_event,
-        )
-
-    # ------------------------------------------------------------------
     def _test_limit_per_model(self) -> int | None:
-        if not self.config.get("TEST_MODE"):
-            return None
         limit = self.config.get("TEST_LIMIT_PER_MODEL")
-        if limit is None:
-            return None
         try:
-            parsed = int(limit)
+            return int(limit)
         except (TypeError, ValueError):
-            self.logger.warning(
-                "Invalid TEST_LIMIT_PER_MODEL value %r; ignoring per-model limit.",
-                limit,
-            )
             return None
-        self.logger.info(
-            "TEST_MODE enabled: limiting to %s headline(s) per model.", parsed
-        )
-        return parsed
 
     # ------------------------------------------------------------------
     def _log_plan(self, plan: BatchPlan) -> None:
-        if plan.total_skipped:
-            self.logger.info(
-                "Skipping %s existing task(s) across %s model(s).",
-                plan.total_skipped,
-                len(plan.skipped_by_model),
-            )
-            for model, count in sorted(plan.skipped_by_model.items()):
-                self.logger.debug(
-                    "Model %s already has %s completed task(s) for prompt %s.",
-                    model,
-                    count,
-                    self._current_prompt_hash or "<current>",
-                )
-
         self.logger.info(
             "Prepared %s task(s) spanning %s model(s).",
             plan.total_tasks,
-            plan.total_models,
+            len(plan.tasks_by_model),
         )
 
     # ------------------------------------------------------------------
-    def _create_connectors(
-        self, endpoints: Mapping[str, str], spec: PromptSpecification
-    ) -> Dict[str, ModelConnector]:
-        compliance_interval = int(
-            self.config.get("COMPLIANCE_REMINDER_INTERVAL", 0) or 0
-        )
+    def _create_connectors(self, endpoints: Dict[str, str]):
+        """Create ModelConnector instances for each active endpoint."""
+        compliance_interval = int(self.config.get("COMPLIANCE_REMINDER_INTERVAL", 0) or 0)
+        expected_language = self.config.get("EXPECTED_LANGUAGE") or "en"
+
         if compliance_interval > 0:
             self.logger.info(
                 "Automatic JSON compliance reminders every %s headline(s).",
                 compliance_interval,
             )
 
-        connectors: Dict[str, ModelConnector] = {}
-        for model, url in endpoints.items():
-            connectors[model] = ModelConnector(
+        connectors = {
+            model: ModelConnector(
                 model,
                 url,
-                int(self.config.get("REQUEST_TIMEOUT", 60) or 60),
+                int(self.config.get("REQUEST_TIMEOUT", 90)),
                 compliance_interval,
                 self.logger,
-                self.config.get("EXPECTED_LANGUAGE"),
-                prompt_spec=spec,
+                expected_language,
             )
+            for model, url in endpoints.items()
+        }
         self.logger.info("Initialized %s connector(s).", len(connectors))
         return connectors
-

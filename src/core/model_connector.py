@@ -39,7 +39,7 @@ class ModelConnector:
             return data, elapsed
         except Exception as e:
             self.logger.error(f"JSON decode error for {title_id}: {e}")
-            print(r.text)
+            self.logger.debug("Raw HTTP body for %s:\n%s", title_id, r.text)
             raise
 
     @staticmethod

@@ -1,136 +1,89 @@
 # LLMPlotBot
 
-LLMPlotBot orchestrates end-to-end batch processing jobs for language models.
-It loads prompts, distributes headline tasks across available model endpoints,
-collects the responses, and persists the structured results alongside rich
-runtime metrics.
+LLMPlotBot is a lightweight script for exercising locally hosted language models
+through [LM Studio](https://lmstudio.ai/). It sends a structured prompt for a
+handful of sample titles, validates that the model returns JSON, and stores each
+valid response on disk.
 
-## Prompt authoring workflow
+## Project layout
 
-Prompts live in a single `data/prompt.txt` file. The authoring convention keeps
-the human-editable instructions at the top of the file and the non-negotiable
-formatting requirements at the bottom. Separate the sections with a blank line
-to keep the split clear.
-
-The runtime keeps `prompt.txt` normalised in this order and archives a hashed
-copy in `data/prompts/`. Update the instruction section directly to change
-behaviour while preserving the formatting rules appended underneath.
-
-## Result persistence
-
-Model responses are saved incrementally to `data/generated_data/` as soon as
-they are available. Writes are protected with lock files so that multiple
-connectors or processes can safely write to the same result set. Configure the
-behaviour via the following keys in `src/config.py`:
-
-- `WRITE_STRATEGY`: `"immediate"` (default) writes every result as soon as it
-  arrives; set to `"batch"` to buffer results.
-- `WRITE_BATCH_SIZE` and `WRITE_BATCH_SECONDS`: thresholds for batch flushing.
-- `WRITE_BATCH_RETRY_LIMIT`: number of per-file retry attempts before a batch is
-  deferred for the next flush.
-- `FILE_LOCK_TIMEOUT`, `FILE_LOCK_POLL_INTERVAL`, and
-  `FILE_LOCK_STALE_SECONDS`: control file-lock acquisition and stale lock
-  cleanup.
-
-Each result file is updated atomically and keeps a per-model, per-prompt hash of
-the structured data returned by the LLM.
-
-## Configuration and overrides
-
-Defaults live in `src/config.py` and are mirrored into `config/default.json` the
-first time the application starts. The loader keeps that file in sync with new
-defaults so you can tweak values without losing upstream changes. Override any
-value by creating a `config/config.local.json` file (preferred), by adding
-`config.local.json` at the project root, or by pointing the `LLMPLOTBOT_CONFIG`
-environment variable at another JSON file. Values are merged deeply, so you can
-override just the keys you care about.
-
-- `LLM_BLOCKLIST` removes unwanted models from consideration even if they are
-  running or explicitly listed.
-- `COMPLIANCE_REMINDER_INTERVAL` (0 disables) automatically replays the
-  JSON-compliance reminder after every _N_ headlines to keep long sessions on
-  track.
-- `TASK_BATCH_SIZE` controls how many headlines are sent to each connector per
-  LLM request. Increase it to process more titles per round-trip; decrease it
-  if a model struggles with large payloads.
-
-Active override sources are logged on start-up.
-
-## Runtime metrics
-
-Each run logs a summary with total runtime, success and failure rates, retry
-counts, and per-model averages. Connector-level reminders (manual, automatic,
-and multi-object response warnings) are aggregated in the summary so you can
-spot models that drift off spec.
-
-## Installation
-
-The project targets Python 3.11+. Create a virtual environment and install the
-dependencies:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+```
+main.py           # Entry point for running ad-hoc batches
+src/core/         # Minimal connector and result-writer helpers
+src/util/         # File locking used by the writer
+src/config.py     # Default configuration values and simple overrides
+config/config.json# Optional user overrides (created manually)
+data/             # Prompt text, title index, and generated outputs
 ```
 
-## Running the processor
+## Prerequisites
 
-The default entry point lives in `main.py`. After activating your virtual
-environment, execute:
+* Python 3.11+
+* An LM Studio instance listening on `http://localhost:1234`
+* `requests` (installed via `pip install -r requirements.txt`)
+
+## Running a batch
+
+1. Start LM Studio and make sure the desired model is loaded.
+2. Update `data/prompt.txt` with the instruction template you want to send.
+3. Ensure `data/titles_index.json` contains the titles to sample from.
+4. Execute the runner:
 
 ```bash
 python main.py
 ```
 
-The CLI bootstraps logging, loads configuration overrides, resolves active LLM
-endpoints, and then executes the batch pipeline. Logs, generated outputs, and
-archives are stored under the directories referenced in the configuration.
+The script sends an initial confirmation prompt. After the model acknowledges
+(or if you choose to continue without confirmation) a random sample of
+`TEST_SAMPLE_SIZE` titles is selected and sent for generation. Raw responses and
+other diagnostic details are emitted at the DEBUG log level for optional
+inspection.
 
-## Configuring LLMPlotBot
+Valid JSON responses are persisted to `data/generated_data/<title_id>.json`.
+Each file contains the most recent response grouped by model and prompt hash.
 
-Configuration defaults are defined in `src/config.py` and materialised to
-`config/default.json` the first time you run the application. To customise
-behaviour without modifying tracked files, create a
-`config/config.local.json` file that overrides only the keys you need. The
-loader performs a deep merge, so nested dictionaries are combined instead of
-replaced.
+## Configuration
 
-For example, to point at a remote model endpoint and enable batch writing:
+Default values live in `src/config.py`. To override them without editing source
+code, create `config/config.json` and provide any subset of keys from
+`DEFAULT_CONFIG`. For example:
 
 ```json
 {
-  "LLM_ENDPOINTS": {
-    "gpt4": "http://example.com:8000/v1/completions"
-  },
+  "GENERATED_DIR": "./data/generated_data",
   "WRITE_STRATEGY": "batch",
-  "WRITE_BATCH_SIZE": 50
+  "WRITE_BATCH_SIZE": 10,
+  "WRITE_BATCH_SECONDS": 2.0
 }
 ```
 
-You can also place a `config.local.json` at the project root or provide an
-absolute path via the `LLMPLOTBOT_CONFIG` environment variable if you want to
-store overrides elsewhere:
+Configuration values currently in use:
 
-```bash
-export LLMPLOTBOT_CONFIG=/path/to/custom-config.json
-python main.py
-```
+| Key | Description |
+| --- | --- |
+| `GENERATED_DIR` | Directory for persisted model responses. |
+| `REQUEST_TIMEOUT` | Seconds to wait for LM Studio responses. |
+| `WRITE_STRATEGY` | Either `"immediate"` (default) or `"batch"`. |
+| `WRITE_BATCH_SIZE` | Number of queued responses before a batch flush. |
+| `WRITE_BATCH_SECONDS` | Maximum time between batch flushes. |
+| `WRITE_BATCH_RETRY_LIMIT` | Retry attempts when file locks fail. |
+| `FILE_LOCK_TIMEOUT` | Seconds to wait for an existing lock to clear. |
+| `FILE_LOCK_POLL_INTERVAL` | Sleep interval while waiting on a lock. |
+| `FILE_LOCK_STALE_SECONDS` | Age at which a lock file is considered stale. |
 
-Key configuration options include:
+## Customising the prompt workflow
 
-- `LLM_ENDPOINTS`: Explicit mapping of model names to HTTP endpoints. If
-  omitted, the pipeline queries LM Studio for available models and falls back
-  to `LLM_BASE_URL` and `LLM_MODELS`.
-- `TASK_BATCH_SIZE`: Number of tasks sent to each connector per request.
-- `TEST_MODE` and `TEST_LIMIT_PER_MODEL`: Limit processing to a subset of
-  titles for dry runs.
-- `WRITE_STRATEGY`, `WRITE_BATCH_SIZE`, and `WRITE_BATCH_SECONDS`: Control how
-  responses are persisted to disk.
-- `COMPLIANCE_REMINDER_INTERVAL`: Frequency (0 disables) of JSON-compliance
-  reminders injected into long sessions.
-- `LOG_DIR`, `GENERATED_DIR`, `BACKUP_DIR`: File system locations for runtime
-  artefacts.
+The helper `make_structured_prompt` in `main.py` defines the JSON schema the
+model must fill out. Adjust the template to request different fields or to
+change instructions. The script expects a JSON array containing at least one
+object; `validate_entry` can be expanded with additional checks if you want more
+rigorous validation.
 
-All active override sources are logged at startup, making it easy to confirm
-which configuration files were applied.
+## Development
+
+* Use `python -m compileall main.py src` to perform a quick syntax check.
+* Generated files are stored under `data/generated_data/`. Remove individual
+  files to re-run prompts for specific titles.
+
+This trimmed-down codebase is intentionally small so new features can be added
+incrementally.

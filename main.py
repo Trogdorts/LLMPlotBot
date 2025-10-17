@@ -6,8 +6,8 @@ from pathlib import Path
 from statistics import mean, stdev
 
 from src.core.model_connector import ModelConnector
-from src.core.writer import ResultWriter  # <-- reattached
-from src.config import DEFAULT_CONFIG     # reuse paths if available
+from src.core.writer import ResultWriter
+from src.config import load_config
 
 # ===== CONFIG =====
 LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
@@ -15,7 +15,8 @@ TITLES_PATH = Path("data/titles_index.json")
 PROMPT_PATH = Path("data/prompt.txt")
 MODEL = "creative-writing-model"
 TEST_SAMPLE_SIZE = 10
-GENERATED_DIR = Path(DEFAULT_CONFIG["GENERATED_DIR"])
+CONFIG = load_config()
+GENERATED_DIR = Path(CONFIG["GENERATED_DIR"])
 # ==================
 
 logging.basicConfig(
@@ -95,9 +96,24 @@ def main():
     prompt = load_prompt(PROMPT_PATH)
     titles = load_titles(TITLES_PATH)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    writer = ResultWriter(GENERATED_DIR, logger=logger)
+    writer = ResultWriter(
+        GENERATED_DIR,
+        strategy=CONFIG["WRITE_STRATEGY"],
+        flush_interval=CONFIG["WRITE_BATCH_SIZE"],
+        flush_seconds=CONFIG["WRITE_BATCH_SECONDS"],
+        flush_retry_limit=CONFIG["WRITE_BATCH_RETRY_LIMIT"],
+        lock_timeout=CONFIG["FILE_LOCK_TIMEOUT"],
+        lock_poll_interval=CONFIG["FILE_LOCK_POLL_INTERVAL"],
+        lock_stale_seconds=CONFIG["FILE_LOCK_STALE_SECONDS"],
+        logger=logger,
+    )
 
-    connector = ModelConnector(MODEL, LM_STUDIO_URL, 90, logger)
+    connector = ModelConnector(
+        MODEL,
+        LM_STUDIO_URL,
+        CONFIG["REQUEST_TIMEOUT"],
+        logger,
+    )
 
     logger.info("Sending initialization prompt to LM Studio.")
     response, _ = connector.send_to_model(prompt, "INIT")
@@ -109,7 +125,7 @@ def main():
 
     if not ("CONFIRM" in content.upper() or content.strip().startswith("[")):
         logger.warning("Initialization message not a confirmation; continuing anyway.")
-        print(content)
+        logger.debug("Initialization response:\n%s", content)
 
     logger.info("CONFIRM received or skipped; proceeding.")
     sample_keys = random.sample(list(titles.keys()), TEST_SAMPLE_SIZE)
@@ -125,9 +141,7 @@ def main():
         msg = connector.extract_content(resp)
         parsed = try_parse_json(msg)
 
-        print("\n--- RAW RESPONSE ---")
-        print(msg)
-        print("--------------------")
+        logger.debug("Raw response for %s:\n%s", key, msg)
 
         if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
             first_entry = parsed[0]
@@ -139,9 +153,8 @@ def main():
                 logger.warning(f"{key}: JSON missing required fields.")
         else:
             logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
-            print("❌ Invalid JSON returned.")
+            logger.debug("Invalid JSON payload for %s:\n%s", key, msg)
 
-        print("--------------------\n")
         times.append(elapsed)
 
         if i % 10 == 0 or i == TEST_SAMPLE_SIZE:

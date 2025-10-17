@@ -12,7 +12,7 @@ from threading import Event
 
 from src.core.model_connector import ModelConnector
 from src.core.writer import ResultWriter  # <-- reattached
-from src.config import CONFIG, DEFAULT_CONFIG     # reuse paths if available
+from src.util.config_manager import CONFIG, DEFAULT_CONFIG     # reuse paths if available
 from src.util.logger_setup import resolve_log_level
 from src.util.prompt_utils import load_prompt, make_structured_prompt, try_parse_json, validate_entry
 

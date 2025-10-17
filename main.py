@@ -6,8 +6,8 @@ from pathlib import Path
 from statistics import mean, stdev
 
 from src.core.model_connector import ModelConnector
-from src.core.writer import ResultWriter  # <-- reattached
-from src.config import DEFAULT_CONFIG     # reuse paths if available
+from src.core.writer import ResultWriter
+from src.config import load_config
 
 # ===== CONFIG =====
 LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
@@ -15,7 +15,8 @@ TITLES_PATH = Path("data/titles_index.json")
 PROMPT_PATH = Path("data/prompt.txt")
 MODEL = "creative-writing-model"
 TEST_SAMPLE_SIZE = 10
-GENERATED_DIR = Path(DEFAULT_CONFIG["GENERATED_DIR"])
+CONFIG = load_config()
+GENERATED_DIR = Path(CONFIG["GENERATED_DIR"])
 # ==================
 
 logging.basicConfig(
@@ -95,9 +96,24 @@ def main():
     prompt = load_prompt(PROMPT_PATH)
     titles = load_titles(TITLES_PATH)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    writer = ResultWriter(GENERATED_DIR, logger=logger)
+    writer = ResultWriter(
+        GENERATED_DIR,
+        strategy=CONFIG["WRITE_STRATEGY"],
+        flush_interval=CONFIG["WRITE_BATCH_SIZE"],
+        flush_seconds=CONFIG["WRITE_BATCH_SECONDS"],
+        flush_retry_limit=CONFIG["WRITE_BATCH_RETRY_LIMIT"],
+        lock_timeout=CONFIG["FILE_LOCK_TIMEOUT"],
+        lock_poll_interval=CONFIG["FILE_LOCK_POLL_INTERVAL"],
+        lock_stale_seconds=CONFIG["FILE_LOCK_STALE_SECONDS"],
+        logger=logger,
+    )
 
-    connector = ModelConnector(MODEL, LM_STUDIO_URL, 90, logger)
+    connector = ModelConnector(
+        MODEL,
+        LM_STUDIO_URL,
+        CONFIG["REQUEST_TIMEOUT"],
+        logger,
+    )
 
     logger.info("Sending initialization prompt to LM Studio.")
     response, _ = connector.send_to_model(prompt, "INIT")

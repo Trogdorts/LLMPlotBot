@@ -37,6 +37,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 # ---------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------
+_CONFIG_DIRNAME = "config"
+_CONFIG_FILENAME = "config.json"
+
+
 def _resolve_project_root() -> Path:
     """Return the project root (directory containing this file's parent 'src')."""
     here = Path(__file__).resolve()
@@ -44,6 +48,14 @@ def _resolve_project_root() -> Path:
         if (parent / "src").exists() or (parent / "main.py").exists():
             return parent
     return Path.cwd()
+
+
+def _determine_config_path() -> Path:
+    """Return the canonical on-disk path for the configuration file."""
+    project_root = _resolve_project_root()
+    config_dir = project_root / _CONFIG_DIRNAME
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir / _CONFIG_FILENAME
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -69,10 +81,7 @@ def load_config(*, include_sources: bool = False) -> Dict[str, Any] | Tuple[Dict
     If the file does not exist, it will be created with DEFAULT_CONFIG.
     No additional merging or overrides occur.
     """
-    project_root = _resolve_project_root()
-    config_dir = project_root / "config"
-    config_path = config_dir / "config.json"
-    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = _determine_config_path()
 
     # Load or create config
     if config_path.exists():

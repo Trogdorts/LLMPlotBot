@@ -69,6 +69,11 @@ Configuration values currently in use:
 | `FILE_LOCK_TIMEOUT` | Seconds to wait for an existing lock to clear. |
 | `FILE_LOCK_POLL_INTERVAL` | Sleep interval while waiting on a lock. |
 | `FILE_LOCK_STALE_SECONDS` | Age at which a lock file is considered stale. |
+| `LM_STUDIO_URL` | Endpoint for LM Studio's chat completions API. |
+| `MODEL` | Model identifier passed to LM Studio. |
+| `TITLES_PATH` | Path to the JSON file containing title metadata. |
+| `PROMPT_PATH` | Path to the prompt template file. |
+| `TEST_SAMPLE_SIZE` | Number of titles sampled per batch run. |
 
 ## Customising the prompt workflow
 
@@ -80,6 +85,7 @@ rigorous validation.
 
 ## Development
 
+* Run `pytest` to execute the lightweight unit tests.
 * Use `python -m compileall main.py src` to perform a quick syntax check.
 * Generated files are stored under `data/generated_data/`. Remove individual
   files to re-run prompts for specific titles.

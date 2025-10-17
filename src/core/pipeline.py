@@ -49,7 +49,6 @@ class BatchProcessingPipeline:
         self.logger = logger
         self.config_sources = tuple(config_sources or ())
         self._current_prompt_hash: str | None = None
-        self._prompt_spec: PromptSpecification | None = None
 
     # ------------------------------------------------------------------
     def run(self) -> bool:
@@ -71,7 +70,6 @@ class BatchProcessingPipeline:
         prompt_bundle = self._load_prompt()
         prompt_hash = prompt_bundle.prompt_hash
         self._current_prompt_hash = prompt_hash
-        self._prompt_spec = prompt_bundle.specification
         self.logger.info("Active prompt hash: %s", prompt_hash)
 
         result_checker = ExistingResultChecker(

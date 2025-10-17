@@ -10,19 +10,11 @@ from statistics import mean, median, stdev
 
 from threading import Event
 
-from src.util.config_manager import (
-    CONFIG,
-    DEFAULT_CONFIG,
-)  # reuse paths if available
 from src.core.model_connector import ModelConnector
-from src.core.writer import ResultWriter
+from src.core.writer import ResultWriter  # <-- reattached
+from src.config import CONFIG, DEFAULT_CONFIG     # reuse paths if available
 from src.util.logger_setup import resolve_log_level
-from src.util.prompt_utils import (
-    load_prompt,
-    make_structured_prompt,
-    try_parse_json,
-    validate_entry,
-)
+from src.util.prompt_utils import load_prompt, make_structured_prompt, try_parse_json, validate_entry
 
 # ===== CONFIG =====
 LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
@@ -230,7 +222,7 @@ def main():
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     writer = ResultWriter(GENERATED_DIR, logger=logger)
 
-    connector = ModelConnector(MODEL, LM_STUDIO_URL, 90, logger=logger)
+    connector = ModelConnector(MODEL, LM_STUDIO_URL, 90, logger)
 
     stop_event = Event()
     restore_signals = _install_signal_handlers(stop_event)

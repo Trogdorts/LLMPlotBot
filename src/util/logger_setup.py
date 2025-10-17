@@ -1,4 +1,7 @@
-"""Logging helpers for the CLI and pipeline entry points."""
+"""
+Logging utilities: colorized console and rotating file logs.
+Always preserves a complete DEBUG log in logs/debug.log.
+"""
 
 import logging
 from typing import Any

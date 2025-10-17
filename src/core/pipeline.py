@@ -14,6 +14,7 @@ from src.core.batch_planner import BatchPlan, BatchPlanner
 from src.core.metrics_collector import MetricsCollector
 from src.core.metrics_summary import MetricsSummaryReporter
 from src.core.model_connector import ModelConnector
+from src.core.prompt_spec import PromptSpecification
 from src.core.shutdown import ShutdownManager
 from src.core.task_runner import TaskRunner
 from src.core.writer import ResultWriter
@@ -48,6 +49,7 @@ class BatchProcessingPipeline:
         self.logger = logger
         self.config_sources = tuple(config_sources or ())
         self._current_prompt_hash: str | None = None
+        self._prompt_spec: PromptSpecification | None = None
 
     # ------------------------------------------------------------------
     def run(self) -> bool:
@@ -69,6 +71,7 @@ class BatchProcessingPipeline:
         prompt_bundle = self._load_prompt()
         prompt_hash = prompt_bundle.prompt_hash
         self._current_prompt_hash = prompt_hash
+        self._prompt_spec = prompt_bundle.specification
         self.logger.info("Active prompt hash: %s", prompt_hash)
 
         result_checker = ExistingResultChecker(
@@ -105,7 +108,7 @@ class BatchProcessingPipeline:
             )
             return False
         deps = self._build_dependencies()
-        connectors = self._create_connectors(active_endpoints)
+        connectors = self._create_connectors(active_endpoints, prompt_bundle.specification)
 
         runner = TaskRunner(
             tasks_by_model,
@@ -344,7 +347,9 @@ class BatchProcessingPipeline:
         )
 
     # ------------------------------------------------------------------
-    def _create_connectors(self, endpoints: Mapping[str, str]) -> Dict[str, ModelConnector]:
+    def _create_connectors(
+        self, endpoints: Mapping[str, str], spec: PromptSpecification
+    ) -> Dict[str, ModelConnector]:
         compliance_interval = int(
             self.config.get("COMPLIANCE_REMINDER_INTERVAL", 0) or 0
         )
@@ -363,6 +368,7 @@ class BatchProcessingPipeline:
                 compliance_interval,
                 self.logger,
                 self.config.get("EXPECTED_LANGUAGE"),
+                prompt_spec=spec,
             )
         self.logger.info("Initialized %s connector(s).", len(connectors))
         return connectors

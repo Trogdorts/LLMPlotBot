@@ -28,7 +28,7 @@ def setup_logger(log_dir: str, console_level: int = logging.DEBUG) -> logging.Lo
             msg = super().format(record)
             return f"{color}{msg}{C_RESET}"
 
-    logger = logging.getLogger("llm_batch_processor")
+    logger = logging.getLogger("llm_plotbot")
     if logger.handlers:
         return logger
 

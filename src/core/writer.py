@@ -1,10 +1,9 @@
-"""ResultWriter with configurable persistence strategy and file locking."""
+"""ResultWriter that persists responses immediately using file locks."""
 
 from __future__ import annotations
 
 import json
 import os
-import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,16 +13,13 @@ from src.util.file_lock import FileLock, FileLockTimeout
 
 
 class ResultWriter:
-    """Persist responses either immediately or via timed batching with file locks."""
+    """Persist responses immediately with retry-aware file locking."""
 
     def __init__(
         self,
         base_dir: str,
         *,
-        strategy: str = "immediate",
-        flush_interval: int = 50,
-        flush_seconds: float = 5.0,
-        flush_retry_limit: int = 3,
+        retry_limit: int = 3,
         lock_timeout: float = 10.0,
         lock_poll_interval: float = 0.1,
         lock_stale_seconds: float = 300.0,
@@ -31,125 +27,60 @@ class ResultWriter:
     ) -> None:
         self.base = Path(base_dir)
         self.logger = logger
-        self.strategy = strategy.lower()
-        self.flush_interval = max(1, flush_interval)
-        self.flush_seconds = max(0.1, flush_seconds)
-        self.flush_retry_limit = max(1, int(flush_retry_limit or 1))
+        self.retry_limit = max(1, int(retry_limit or 1))
         self.lock_timeout = max(0.1, lock_timeout)
         self.lock_poll_interval = max(0.01, lock_poll_interval)
         self.lock_stale_seconds = max(1.0, lock_stale_seconds)
-        self.buffer: List[Tuple[str, str, str, Dict[str, Any]]] = []
-        self.last_flush = time.time()
-        self.lock = threading.Lock()
         self.base.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     def write(self, id: str, model: str, prompt_hash: str, response: Dict[str, Any]):
-        """Queue a single write and flush based on the configured strategy."""
+        """Persist a single response with retry handling for lock contention."""
 
-        with self.lock:
-            self.buffer.append((id, model, prompt_hash, response))
-            if self.strategy == "immediate":
-                self._flush_locked(force=True)
-                return
+        attempts_remaining = self.retry_limit
+        backoff_step = 0
 
-            should_flush = (
-                len(self.buffer) >= self.flush_interval
-                or (time.time() - self.last_flush) > self.flush_seconds
-            )
-            if should_flush:
-                self._flush_locked(force=True)
-
-    # ------------------------------------------------------------------
-    def flush(self):
-        """Persist all buffered writes to disk with atomic file replacement."""
-
-        with self.lock:
-            self._flush_locked(force=True)
-
-    # ------------------------------------------------------------------
-    def _flush_locked(self, *, force: bool = False):
-        if not self.buffer:
-            return
-
-        if not force and self.strategy != "immediate":
-            elapsed = time.time() - self.last_flush
-            if elapsed < self.flush_seconds and len(self.buffer) < self.flush_interval:
-                return
-
-        pending = list(self.buffer)
-        self.buffer.clear()
-        self.last_flush = time.time()
-
-        failed: List[Tuple[str, str, str, Dict[str, Any]]] = []
-        success_count = 0
-
-        grouped: Dict[str, List[Tuple[str, str, str, Dict[str, Any]]]] = {}
-        for item in pending:
-            grouped.setdefault(item[0], []).append(item)
-
-        for id, records in grouped.items():
-            try:
-                written = self._write_batch(id, records)
-            except Exception as exc:  # pragma: no cover - defensive
-                failed.extend(records)
-                if self.logger:
-                    self.logger.error(
-                        "Failed to persist batch for %s: %s", id, exc, exc_info=True
-                    )
-                continue
-
-            if written:
-                success_count += written
-            else:
-                failed.extend(records)
-
-        if failed:
-            # Requeue failed entries for another attempt on the next flush.
-            self.buffer = failed + self.buffer
-
-        if self.logger:
-            if success_count:
-                self.logger.info("Flushed %s result(s) to disk.", success_count)
-            if failed:
-                self.logger.warning(
-                    "Deferred %s result(s) due to file lock contention or errors.",
-                    len(failed),
-                )
-
-    # ------------------------------------------------------------------
-    def _write_batch(
-        self, id: str, records: List[Tuple[str, str, str, Dict[str, Any]]]
-    ) -> int:
-        """Persist a batch of responses for the same identifier atomically."""
-
-        attempts_remaining = self.flush_retry_limit
         while attempts_remaining > 0:
             attempts_remaining -= 1
             try:
-                return self._persist_records(id, records)
+                self._persist_record(id, model, prompt_hash, response)
+                if self.logger:
+                    self.logger.debug("Saved %s for model %s.", id, model)
+                return
             except FileLockTimeout as exc:
                 if self.logger:
                     self.logger.warning(str(exc))
                 if attempts_remaining == 0:
-                    return 0
-                # Small backoff before retrying the same file.
-                time.sleep(min(0.5 * (self.flush_retry_limit - attempts_remaining), 2.0))
+                    break
             except Exception:
                 if attempts_remaining == 0:
                     raise
                 if self.logger:
                     self.logger.warning(
-                        "Retrying batch write for %s due to unexpected error.", id,
+                        "Retrying write for %s due to unexpected error.",
+                        id,
                         exc_info=True,
                     )
-                time.sleep(min(0.5 * (self.flush_retry_limit - attempts_remaining), 2.0))
-        return 0
+
+            backoff_step += 1
+            time.sleep(min(0.5 * backoff_step, 2.0))
+
+        if self.logger:
+            self.logger.error(
+                "Failed to persist result for %s after %s attempt(s).",
+                id,
+                self.retry_limit,
+            )
 
     # ------------------------------------------------------------------
-    def _persist_records(
-        self, id: str, records: List[Tuple[str, str, str, Dict[str, Any]]]
-    ) -> int:
+    def flush(self):
+        """Compatibility shim for previous API; immediate writes need no flushing."""
+        return
+
+    # ------------------------------------------------------------------
+    def _persist_record(
+        self, id: str, model: str, prompt_hash: str, response: Dict[str, Any]
+    ) -> None:
         path = self.base / f"{id}.json"
         tmp = path.with_name(path.name + ".tmp")
         lock_path = path.with_name(path.name + ".lock")
@@ -217,8 +148,7 @@ class ResultWriter:
                     model_entry = {}
                     models_section[model] = model_entry
 
-                model_entry[prompt_hash] = payload
-                written += 1
+            model_entry[prompt_hash] = payload
 
             if chosen_title:
                 data["title"] = chosen_title

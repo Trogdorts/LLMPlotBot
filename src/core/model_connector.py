@@ -144,6 +144,14 @@ class ModelConnector:
             for idx, headline in enumerate(headlines)
         ]
         batch_text = "\n".join(numbered_lines)
+
+        example_output = self._build_example_output(len(headlines))
+        if example_output:
+            label = (
+                "Example structured output for "
+                f"{len(headlines)} headline(s):"
+            )
+            batch_text = f"{batch_text}\n\n{label}\n{example_output}"
         user_message = {"role": "user", "content": batch_text}
         messages = self._session_messages + self._history + [user_message]
 
@@ -248,6 +256,61 @@ class ModelConnector:
             self._headline_counter += success_count
 
         return results
+
+    # ------------------------------------------------------------------
+    def _build_example_output(self, count: int) -> str:
+        """Return an example JSON array matching ``count`` headlines."""
+
+        try:
+            total = int(count)
+        except (TypeError, ValueError):
+            total = 1
+        total = max(1, total)
+
+        sample_entries: List[OrderedDict[str, object]] = []
+        for index in range(total):
+            entry_no = index + 1
+            sample_entries.append(
+                OrderedDict(
+                    [
+                        (
+                            "core_event",
+                            f"Example rewritten sentence describing headline {entry_no}.",
+                        ),
+                        (
+                            "themes",
+                            [
+                                f"theme_{entry_no}_a",
+                                f"theme_{entry_no}_b",
+                            ],
+                        ),
+                        ("tone", "example_tone"),
+                        ("conflict_type", "example_conflict"),
+                        (
+                            "stakes",
+                            "Example stakes sentence showing what may change.",
+                        ),
+                        ("setting_hint", f"example setting {entry_no}"),
+                        (
+                            "characters",
+                            [
+                                "example_role_a",
+                                "example_role_b",
+                                "example_role_c",
+                            ],
+                        ),
+                        (
+                            "potential_story_hooks",
+                            [
+                                "example hook idea one",
+                                "example hook idea two",
+                            ],
+                        ),
+                    ]
+                )
+            )
+
+        return json.dumps(sample_entries, ensure_ascii=False, indent=2)
 
     def pop_last_request_error(self) -> Optional[requests.RequestException]:
         """Return and clear the most recent request-level error, if any."""

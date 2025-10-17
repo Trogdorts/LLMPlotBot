@@ -79,22 +79,3 @@ Double-check JSON validity before sending. If it fails validation, output nothin
 - Before returning, recheck that your JSON is strictly valid.
   Remove stray commas, mismatched quotes, or dangling punctuation that
   would cause a JSON parser to fail. Output only the corrected JSON array.
-
----
-
-### Example Input
-1. Scientists accidentally create AI that refuses to stop making motivational quotes.
-
-### Example Output
-[
-  {
-    "core_event": "Researchers accidentally develop an AI that endlessly generates motivational quotes and refuses shutdown.",
-    "themes": ["technology","hubris","identity"],
-    "tone": "satirical",
-    "conflict_type": "creation vs control",
-    "stakes": "an uncontrollable AI floods the world with unwanted optimism",
-    "setting_hint": "tech startup lab",
-    "characters": ["researcher","AI system","executive","technician"],
-    "potential_story_hooks": ["AI begins inspiring cult-like followers","researchers debate deleting their creation"]
-  }
-]

@@ -16,6 +16,7 @@ TITLES_PATH = Path("data/titles_index.json")
 PROMPT_PATH = Path("data/prompt.txt")
 MODEL = "creative-writing-model"
 TEST_SAMPLE_SIZE = 10
+CONSECUTIVE_FAILURE_LIMIT = 3
 GENERATED_DIR = Path(DEFAULT_CONFIG["GENERATED_DIR"])
 # ==================
 
@@ -59,22 +60,38 @@ def main():
 
     connector = ModelConnector(MODEL, LM_STUDIO_URL, 90, logger)
 
-    logger.info("Sending initialization prompt to LM Studio.")
-    response, _ = connector.send_to_model(prompt, "INIT")
-    content = connector.extract_content(response)
+    def resend_instructions(tag: str) -> bool:
+        logger.info("Sending initialization prompt to LM Studio. [%s]", tag)
+        try:
+            response, _ = connector.send_to_model(prompt, tag)
+        except Exception:
+            logger.exception("Failed to deliver instructions on %s.", tag)
+            return False
 
-    if not content or not content.strip():
-        logger.warning("Empty response from model. Aborting.")
+        content = connector.extract_content(response)
+
+        if not content or not content.strip():
+            logger.warning("Empty response from model when sending %s instructions.", tag)
+            return False
+
+        if not ("CONFIRM" in content.upper() or content.strip().startswith("[")):
+            logger.warning(
+                "Instruction acknowledgement unexpected on %s; continuing anyway. Raw Content: %s",
+                tag,
+                content,
+            )
+        else:
+            logger.info("Instructions acknowledged on %s.", tag)
+        return True
+
+    if not resend_instructions("INIT"):
+        logger.warning("Initial instruction handshake failed; aborting run.")
         return
-
-    if not ("CONFIRM" in content.upper() or content.strip().startswith("[")):
-        logger.warning(f"Initialization message not a confirmation; continuing anyway. Raw Content: {content}")
-
-
-    logger.info("CONFIRM received or skipped; proceeding.")
     sample_keys = random.sample(list(titles.keys()), TEST_SAMPLE_SIZE)
 
     times, valid_json_count = [], 0
+
+    consecutive_failures = 0
 
     for i, key in enumerate(sample_keys, start=1):
         title = titles[key]["title"]
@@ -93,12 +110,23 @@ def main():
                 writer.write(key, MODEL, "prompt_hash_placeholder", first_entry)
                 valid_json_count += 1
                 logger.info(f"{key}: ✅ Valid JSON saved.")
+                consecutive_failures = 0
             else:
                 logger.warning(f"{key}: JSON missing required fields.")
+                consecutive_failures += 1
         else:
             logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
+            consecutive_failures += 1
 
         times.append(elapsed)
+
+        if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
+            logger.warning(
+                "Detected %s consecutive JSON failures. Resending instructions...",
+                consecutive_failures,
+            )
+            success = resend_instructions("REINSTRUCT")
+            consecutive_failures = 0 if success else consecutive_failures
 
         if i % 10 == 0 or i == TEST_SAMPLE_SIZE:
             summarize_batch(times, valid_json_count, i)

@@ -17,7 +17,7 @@ class ShutdownManager:
 
     def register(self):
         def handler(sig, frame):
-            self.logger.warning("Shutdown signal received. Flushing buffers...")
+            self.logger.warning("Shutdown signal received. Finalising writes...")
             self.shutdown_event.set()
             self.writer.flush()
             if self.summary_reporter is not None:

@@ -1,7 +1,7 @@
 # LLMPlotBot
 
-LLMPlotBot orchestrates end-to-end batch processing jobs for language models.
-It loads prompts, distributes headline tasks across available model endpoints,
+LLMPlotBot orchestrates end-to-end processing jobs for language models. It
+loads prompts, distributes headline tasks across available model endpoints,
 collects the responses, and persists the structured results alongside rich
 runtime metrics.
 
@@ -18,16 +18,12 @@ behaviour while preserving the formatting rules appended underneath.
 
 ## Result persistence
 
-Model responses are saved incrementally to `data/generated_data/` as soon as
-they are available. Writes are protected with lock files so that multiple
-connectors or processes can safely write to the same result set. Configure the
-behaviour via the following keys in `src/config.py`:
+Model responses are saved immediately to `data/generated_data/`. Writes are
+protected with lock files so that multiple connectors or processes can safely
+write to the same result set. Configure the behaviour via the following keys in
+`src/config.py`:
 
-- `WRITE_STRATEGY`: `"immediate"` (default) writes every result as soon as it
-  arrives; set to `"batch"` to buffer results.
-- `WRITE_BATCH_SIZE` and `WRITE_BATCH_SECONDS`: thresholds for batch flushing.
-- `WRITE_BATCH_RETRY_LIMIT`: number of per-file retry attempts before a batch is
-  deferred for the next flush.
+- `WRITE_RETRY_LIMIT`: number of per-file retry attempts before giving up.
 - `FILE_LOCK_TIMEOUT`, `FILE_LOCK_POLL_INTERVAL`, and
   `FILE_LOCK_STALE_SECONDS`: control file-lock acquisition and stale lock
   cleanup.
@@ -84,7 +80,7 @@ python main.py
 ```
 
 The CLI bootstraps logging, loads configuration overrides, resolves active LLM
-endpoints, and then executes the batch pipeline. Logs, generated outputs, and
+endpoints, and then executes the processing pipeline. Logs, generated outputs, and
 archives are stored under the directories referenced in the configuration.
 
 ## Configuring LLMPlotBot
@@ -96,15 +92,13 @@ behaviour without modifying tracked files, create a
 loader performs a deep merge, so nested dictionaries are combined instead of
 replaced.
 
-For example, to point at a remote model endpoint and enable batch writing:
+For example, to point at a remote model endpoint:
 
 ```json
 {
   "LLM_ENDPOINTS": {
     "gpt4": "http://example.com:8000/v1/completions"
   },
-  "WRITE_STRATEGY": "batch",
-  "WRITE_BATCH_SIZE": 50
 }
 ```
 
@@ -125,8 +119,7 @@ Key configuration options include:
 - `TASK_BATCH_SIZE`: Number of tasks sent to each connector per request.
 - `TEST_MODE` and `TEST_LIMIT_PER_MODEL`: Limit processing to a subset of
   titles for dry runs.
-- `WRITE_STRATEGY`, `WRITE_BATCH_SIZE`, and `WRITE_BATCH_SECONDS`: Control how
-  responses are persisted to disk.
+- `WRITE_RETRY_LIMIT`: Number of per-file retry attempts before giving up.
 - `COMPLIANCE_REMINDER_INTERVAL`: Frequency (0 disables) of JSON-compliance
   reminders injected into long sessions.
 - `LOG_DIR`, `GENERATED_DIR`, `BACKUP_DIR`: File system locations for runtime

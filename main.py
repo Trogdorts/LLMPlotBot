@@ -125,7 +125,7 @@ def main():
 
     if not ("CONFIRM" in content.upper() or content.strip().startswith("[")):
         logger.warning("Initialization message not a confirmation; continuing anyway.")
-        print(content)
+        logger.debug("Initialization response:\n%s", content)
 
     logger.info("CONFIRM received or skipped; proceeding.")
     sample_keys = random.sample(list(titles.keys()), TEST_SAMPLE_SIZE)
@@ -141,9 +141,7 @@ def main():
         msg = connector.extract_content(resp)
         parsed = try_parse_json(msg)
 
-        print("\n--- RAW RESPONSE ---")
-        print(msg)
-        print("--------------------")
+        logger.debug("Raw response for %s:\n%s", key, msg)
 
         if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
             first_entry = parsed[0]
@@ -155,9 +153,8 @@ def main():
                 logger.warning(f"{key}: JSON missing required fields.")
         else:
             logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
-            print("❌ Invalid JSON returned.")
+            logger.debug("Invalid JSON payload for %s:\n%s", key, msg)
 
-        print("--------------------\n")
         times.append(elapsed)
 
         if i % 10 == 0 or i == TEST_SAMPLE_SIZE:

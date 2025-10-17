@@ -72,6 +72,8 @@ class ModelConnector:
             )
         self._session_messages: List[Dict[str, str]] = []
         self._history: List[Dict[str, str]] = []
+        self._user_instructions: str = ""
+        self._program_instructions: str = ""
         # Limit the amount of conversation state retained in memory to avoid
         # unbounded growth when processing large batches of headlines.
         self._history_limit = 50  # stores up to 25 prompt/response pairs
@@ -90,13 +92,11 @@ class ModelConnector:
         self.logger.info("Starting session for model %s", self.model)
         dynamic = self._normalise_prompt_section(prompt_dynamic)
         formatting = self._normalise_prompt_section(prompt_formatting)
+        self._user_instructions = dynamic
+        self._program_instructions = formatting
         self._session_messages = [
             {"role": "system", "content": self.RESPONSE_INSTRUCTION}
         ]
-        if dynamic:
-            self._session_messages.append({"role": "user", "content": dynamic})
-        if formatting:
-            self._session_messages.append({"role": "user", "content": formatting})
         self._history = []
         self._active = True
         self._headline_counter = 0
@@ -108,6 +108,8 @@ class ModelConnector:
         self._session_messages = []
         self._history = []
         self._headline_counter = 0
+        self._user_instructions = ""
+        self._program_instructions = ""
         self._active = False
 
     # ------------------------------------------------------------------
@@ -131,11 +133,26 @@ class ModelConnector:
             raise RuntimeError("Session has not been started. Call start_session() first.")
 
         start_index = self._headline_counter + 1
-        numbered_lines = [
-            f"{start_index + idx}. {clean_prompt_text(headline)}"
-            for idx, headline in enumerate(headlines)
-        ]
-        batch_text = "\n".join(numbered_lines)
+        template_entries: List[OrderedDict[str, object]] = []
+        for headline in headlines:
+            entry = OrderedDict()
+            entry["title"] = clean_prompt_text(headline)
+            for field in self._ordered_fields:
+                entry[field.name] = [] if field.is_list() else ""
+            template_entries.append(entry)
+
+        entries_json = json.dumps(template_entries, ensure_ascii=False, indent=2)
+
+        sections: List[str] = []
+        if self._user_instructions:
+            sections.append("instructions from user")
+            sections.append(self._user_instructions)
+        if self._program_instructions:
+            sections.append("instructions from program")
+            sections.append(self._program_instructions)
+        sections.append(entries_json)
+
+        batch_text = "\n\n".join(sections)
         user_message = {"role": "user", "content": batch_text}
         messages = self._session_messages + self._history + [user_message]
 

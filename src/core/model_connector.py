@@ -41,6 +41,10 @@ class ModelConnector:
             self.logger.error(f"JSON decode error for {title_id}: {e}")
             print(r.text)
             raise
+    def shutdown(self):
+        """No-op for compatibility with pipeline shutdown calls."""
+        if self.logger:
+            self.logger.debug("ModelConnector.shutdown() called — nothing to close.")
 
     @staticmethod
     def extract_content(response: dict) -> str:

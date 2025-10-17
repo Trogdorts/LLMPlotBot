@@ -13,10 +13,25 @@ from typing import Any, Dict, Iterator, Mapping, Optional, Tuple
 
 from .path_utils import normalize_for_logging
 
-
-CacheIndex = Dict[str, Dict[str, str]]
+from .path_utils import normalize_for_logging
 
 LOCK = threading.Lock()
+
+
+def load_cache(config, logger):
+    """Load titles_index.json if it exists in BASE_DIR."""
+    cache_path = config["CACHE_PATH"]
+    if os.path.exists(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        logger.info(
+            "Loaded %s cached entries from %s.",
+            len(data),
+            normalize_for_logging(cache_path),
+        )
+        return data
+    logger.warning("Cache file not found.")
+    return None
 
 
 def load_cache(config: Mapping[str, Any], logger) -> Optional[CacheIndex]:
@@ -43,12 +58,12 @@ def save_final(data: CacheIndex, config: Mapping[str, Any], logger) -> None:
 
     cache_path = Path(config["CACHE_PATH"])
     with LOCK:
-        with cache_path.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
         logger.info(
             "Saved %s entries to %s",
             len(data),
-            normalize_for_logging(str(cache_path)),
+            normalize_for_logging(cache_path),
         )
     gc.collect()
 
@@ -78,13 +93,13 @@ def _read_json_file(path: Path) -> Optional[Tuple[str, str, Path]]:
 def build_cache(config: Mapping[str, Any], logger) -> CacheIndex:
     """Scan ``JSON_DIR`` for headline files and build an in-memory index."""
 
-    base_dir = Path(config["BASE_DIR"])
-    json_dir = Path(config.get("JSON_DIR", base_dir))
-    max_workers = max(1, int(config.get("MAX_WORKERS", 4) or 1))
-
+    json_dir = Path(config.get("JSON_DIR", config["BASE_DIR"]))
+    max_workers = config.get("MAX_WORKERS", 4)
     index: CacheIndex = {}
     start = datetime.now()
-    logger.info("Scanning %s", normalize_for_logging(str(json_dir), extra_roots=[str(base_dir)]))
+    logger.info("Scanning %s", normalize_for_logging(json_dir))
+
+    logger.info("Scanning %s", normalize_for_logging(str(json_dir)))
 
     json_files = list(_iter_json_files(json_dir))
     total = len(json_files)
@@ -125,6 +140,3 @@ def build_cache(config: Mapping[str, Any], logger) -> CacheIndex:
     )
     gc.collect()
     return index
-
-
-__all__ = ["CacheIndex", "load_cache", "build_cache", "save_final"]

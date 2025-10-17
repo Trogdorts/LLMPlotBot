@@ -6,12 +6,7 @@ import json
 import os
 import threading
 import time
-<<<<<<< HEAD
 from typing import Any, Dict, List, Tuple
-=======
-from typing import Any, Dict, List, Optional, Tuple, Mapping, Sequence
-
->>>>>>> origin/main
 from pathlib import Path
 
 from src.util.file_lock import FileLock, FileLockTimeout
@@ -51,60 +46,11 @@ class ResultWriter:
     def write(self, id: str, model: str, prompt_hash: str, response: Dict[str, Any]):
         """Queue a single write and flush based on the configured strategy."""
 
-<<<<<<< HEAD
         with self.lock:
             self.buffer.append((id, model, prompt_hash, response))
             if self.strategy == "immediate":
                 self._flush_locked(force=True)
                 return
-=======
-        payload = dict(response)
-        title = str(payload.pop("title", "") or "")
-        self._persist_records_with_retry(
-            id,
-            [(model, prompt_hash, payload, title)],
-            debug_label=f"model {model}",
-        )
-
-    # ------------------------------------------------------------------
-    def write_many(
-        self,
-        id: str,
-        records: Sequence[Tuple[str, str, Mapping[str, Any]]],
-    ) -> None:
-        """Persist multiple responses for the same identifier in one operation."""
-
-        if not records:
-            return
-
-        prepared: List[Tuple[str, str, Dict[str, Any], str]] = []
-        for model, prompt_hash, response in records:
-            payload = dict(response)
-            title = str(payload.pop("title", "") or "")
-            prepared.append((model, prompt_hash, payload, title))
-
-        self._persist_records_with_retry(
-            id,
-            prepared,
-            debug_label=f"batch of {len(prepared)} record(s)",
-        )
-
-    # ------------------------------------------------------------------
-    def flush(self):
-        """Compatibility shim for previous API; immediate writes need no flushing."""
-        return
-
-    # ------------------------------------------------------------------
-    def _persist_records_with_retry(
-        self,
-        id: str,
-        prepared_records: Sequence[Tuple[str, str, Dict[str, Any], str]],
-        *,
-        debug_label: str,
-    ) -> None:
-        attempts_remaining = self.retry_limit
-        backoff_step = 0
->>>>>>> origin/main
 
             should_flush = (
                 len(self.buffer) >= self.flush_interval
@@ -174,19 +120,7 @@ class ResultWriter:
         while attempts_remaining > 0:
             attempts_remaining -= 1
             try:
-<<<<<<< HEAD
                 return self._persist_records(id, records)
-=======
-                written = self._persist_records(id, prepared_records)
-                if self.logger:
-                    self.logger.debug(
-                        "Saved %s with %s (wrote %s record(s)).",
-                        id,
-                        debug_label,
-                        written,
-                    )
-                return
->>>>>>> origin/main
             except FileLockTimeout as exc:
                 if self.logger:
                     self.logger.warning(str(exc))
@@ -212,30 +146,19 @@ class ResultWriter:
 
     # ------------------------------------------------------------------
     def _persist_records(
-<<<<<<< HEAD
         self, id: str, records: List[Tuple[str, str, str, Dict[str, Any]]]
     ) -> int:
         """Perform the atomic JSON write with file lock and merge existing data."""
-=======
-        self, id: str, prepared_records: Sequence[Tuple[str, str, Dict[str, Any], str]]
-    ) -> int:
->>>>>>> origin/main
         path = self.base / f"{id}.json"
         tmp = path.with_name(path.name + ".tmp")
         lock_path = path.with_name(path.name + ".lock")
 
-<<<<<<< HEAD
         with FileLock(
             str(lock_path),
             timeout=self.lock_timeout,
             poll_interval=self.lock_poll_interval,
             stale_seconds=self.lock_stale_seconds,
         ):
-=======
-        def _load_existing(
-            target: Path,
-        ) -> Tuple[Dict[str, Any], str, Optional[float]]:
->>>>>>> origin/main
             data: Dict[str, Any] = {}
 
             if path.exists():
@@ -257,12 +180,8 @@ class ResultWriter:
             written = 0
             chosen_title = existing_title
 
-<<<<<<< HEAD
             for _, model, prompt_hash, response in records:
                 title = response.get("title", "")
-=======
-            for record_model, record_prompt_hash, payload, title in prepared_records:
->>>>>>> origin/main
                 if title and not chosen_title:
                     chosen_title = title
                 elif (
@@ -277,27 +196,16 @@ class ResultWriter:
                         chosen_title,
                     )
 
-<<<<<<< HEAD
                 payload = dict(response)
                 payload.pop("title", None)
 
                 model_entry = models_section.setdefault(model, {})
-=======
-                model_entry = models_section.setdefault(record_model, {})
->>>>>>> origin/main
                 if not isinstance(model_entry, dict):
                     model_entry = {}
-                    models_section[record_model] = model_entry
+                    models_section[model] = model_entry
 
-<<<<<<< HEAD
                 model_entry[prompt_hash] = payload
                 written += 1
-=======
-                existing_payload = model_entry.get(record_prompt_hash)
-                if existing_payload != payload:
-                    model_entry[record_prompt_hash] = payload
-                    written += 1
->>>>>>> origin/main
 
             if chosen_title:
                 data["title"] = chosen_title
@@ -316,41 +224,7 @@ class ResultWriter:
                 f.write("\n")
             os.replace(tmp, path)
 
-<<<<<<< HEAD
         if self.logger:
             self.logger.debug("Saved %s batch with %s record(s).", id, len(records))
-=======
-            with FileLock(
-                str(lock_path),
-                timeout=self.lock_timeout,
-                poll_interval=self.lock_poll_interval,
-                stale_seconds=self.lock_stale_seconds,
-            ):
-                current_mtime: Optional[float]
-                try:
-                    current_mtime = path.stat().st_mtime
-                except FileNotFoundError:
-                    current_mtime = None
-
-                if current_mtime != last_mtime:
-                    continue
-
-                try:
-                    tmp.unlink()
-                except FileNotFoundError:
-                    pass
-
-                with tmp.open("w", encoding="utf-8") as handle:
-                    handle.write(serialized)
-
-                os.replace(tmp, path)
-
-            if self.logger:
-                self.logger.debug(
-                    "Saved %s batch with %s record(s).", id, written
-                )
-
-            return written
->>>>>>> origin/main
 
         return len(records)

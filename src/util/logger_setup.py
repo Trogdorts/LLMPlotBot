@@ -1,9 +1,6 @@
-"""Logging helpers for the CLI and pipeline entry points.
-
-This module centralises logger configuration and ensures that every run keeps
-both a console stream and rotating log files. It always preserves a complete
-``DEBUG`` log in ``logs/debug.log`` regardless of the console verbosity, which
-helps with post-mortem analysis without flooding the terminal.
+"""
+Logging utilities: colorized console and rotating file logs.
+Always preserves a complete DEBUG log in logs/debug.log.
 """
 
 import logging

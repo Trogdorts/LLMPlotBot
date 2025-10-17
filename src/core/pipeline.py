@@ -329,9 +329,9 @@ class BatchProcessingPipeline:
                 model,
                 url,
                 int(self.config.get("REQUEST_TIMEOUT", 90)),
-                compliance_interval,
                 self.logger,
-                expected_language,
+                compliance_interval=compliance_interval,
+                expected_language=expected_language,
             )
             for model, url in endpoints.items()
         }

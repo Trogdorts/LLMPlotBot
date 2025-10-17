@@ -1,0 +1,32 @@
+{
+  "BACKUP_DIR": "./backups",
+  "BASE_DIR": "./data",
+  "COMPLIANCE_REMINDER_INTERVAL": 0,
+  "EXPECTED_LANGUAGE": "en",
+  "FILE_LOCK_POLL_INTERVAL": 0.1,
+  "FILE_LOCK_STALE_SECONDS": 300.0,
+  "FILE_LOCK_TIMEOUT": 10.0,
+  "GENERATED_DIR": "./data/generated_data",
+  "IGNORE_FOLDERS": [
+    "backups",
+    ".venv",
+    "__pycache__",
+    "logs"
+  ],
+  "JSON_DIR": "./data/json",
+  "LLM_BASE_URL": "http://localhost:1234",
+  "LLM_BLOCKLIST": [],
+  "LLM_ENDPOINTS": {},
+  "LLM_MODELS": [],
+  "LOG_DIR": "./logs",
+  "LOG_LEVEL": "INFO",
+  "MAX_WORKERS": 8,
+  "METRICS_SUMMARY_TASK_INTERVAL": 25,
+  "METRICS_SUMMARY_TIME_SECONDS": 120.0,
+  "REQUEST_TIMEOUT": 90,
+  "RETRY_LIMIT": 3,
+  "TASK_BATCH_SIZE": 5,
+  "TEST_LIMIT_PER_MODEL": 10,
+  "TEST_MODE": false,
+  "WRITE_RETRY_LIMIT": 3
+}

@@ -77,11 +77,11 @@ Configuration values currently in use:
 
 ## Customising the prompt workflow
 
-The helper `make_structured_prompt` in `main.py` defines the JSON schema the
-model must fill out. Adjust the template to request different fields or to
-change instructions. The script expects a JSON array containing at least one
-object; `validate_entry` can be expanded with additional checks if you want more
-rigorous validation.
+The helper `make_structured_prompt` in `src/core/prompts.py` defines the JSON
+schema the model must fill out. Adjust the template to request different fields
+or to change instructions. The script expects a JSON array containing at least
+one object; `validate_entry` in `src/core/prompting.py` can be expanded with
+additional checks if you want more rigorous validation.
 
 ## Development
 

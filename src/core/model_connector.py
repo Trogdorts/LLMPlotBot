@@ -28,7 +28,9 @@ def clean_prompt_text(text: str) -> str:
 class ModelConnector:
     """Blocking HTTP client that maintains one persistent chat session per model."""
 
-    JSON_ONLY_INSTRUCTION = "Return only the JSON object described. No extra text."
+    RESPONSE_INSTRUCTION = (
+        "Return only the JSON array created by filling in the provided template for each headline."
+    )
 
     _NON_ASCII_RE = re.compile(r"[^\x00-\x7F]+")
     _LANGUAGE_REPLACEMENTS = {
@@ -92,7 +94,9 @@ class ModelConnector:
         self.logger.info("Starting session for model %s", self.model)
         dynamic = self._normalise_prompt_section(prompt_dynamic)
         formatting = self._normalise_prompt_section(prompt_formatting)
-        self._session_messages = [{"role": "system", "content": self.JSON_ONLY_INSTRUCTION}]
+        self._session_messages = [
+            {"role": "system", "content": self.RESPONSE_INSTRUCTION}
+        ]
         if dynamic:
             self._session_messages.append({"role": "user", "content": dynamic})
         if formatting:
@@ -130,22 +134,12 @@ class ModelConnector:
         if not self._active:
             raise RuntimeError("Session has not been started. Call start_session() first.")
 
-        self._maybe_send_auto_compliance_reminder()
-
         start_index = self._headline_counter + 1
         numbered_lines = [
             f"{start_index + idx}. {clean_prompt_text(headline)}"
             for idx, headline in enumerate(headlines)
         ]
         batch_text = "\n".join(numbered_lines)
-
-        example_output = self._build_example_output(len(headlines))
-        if example_output:
-            label = (
-                "Example structured output for "
-                f"{len(headlines)} headline(s):"
-            )
-            batch_text = f"{batch_text}\n\n{label}\n{example_output}"
         user_message = {"role": "user", "content": batch_text}
         messages = self._session_messages + self._history + [user_message]
 
@@ -252,11 +246,6 @@ class ModelConnector:
         return results
 
     # ------------------------------------------------------------------
-    def _build_example_output(self, count: int) -> str:
-        """Return an example JSON array matching ``count`` headlines."""
-
-        return self._prompt_spec.build_example_output(count)
-
     def pop_last_request_error(self) -> Optional[requests.RequestException]:
         """Return and clear the most recent request-level error, if any."""
 
@@ -266,14 +255,11 @@ class ModelConnector:
 
     # ------------------------------------------------------------------
     def reinforce_compliance(self) -> None:
-        """Reinforce the JSON-only instruction before retrying a headline."""
-        if not self._active:
-            return
-        reminder = {"role": "user", "content": self.JSON_ONLY_INSTRUCTION}
-        self._history.append(reminder)
-        self._prune_history()
-        self._manual_compliance_reminders += 1
-        self.logger.warning("[%s] Re-sent JSON compliance instruction.", self.model)
+        """No-op retained for compatibility; format reminders are no longer sent."""
+        self.logger.debug(
+            "[%s] Compliance reminder skipped; relying on template instructions.",
+            self.model,
+        )
 
     # ------------------------------------------------------------------
     def _extract_response_entries(
@@ -616,18 +602,7 @@ class ModelConnector:
         return ([coerced] if coerced else []), item_replaced
 
     def _maybe_send_auto_compliance_reminder(self) -> None:
-        if not self._active or self.compliance_interval <= 0:
-            return
-        if self._headline_counter and self._headline_counter % self.compliance_interval == 0:
-            reminder = {"role": "user", "content": self.JSON_ONLY_INSTRUCTION}
-            self._history.append(reminder)
-            self._prune_history()
-            self._auto_compliance_reminders += 1
-            self.logger.info(
-                "[%s] Automatically re-sent JSON compliance instruction after %s headline(s).",
-                self.model,
-                self._headline_counter,
-            )
+        return
 
     def _prune_history(self) -> None:
         """Trim stored history to the configured limit."""

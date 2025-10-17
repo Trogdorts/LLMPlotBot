@@ -329,8 +329,13 @@ class TaskRunner:
                             current_batch_size,
                             request_error,
                         )
-                connector.reinforce_compliance()
-                pending.extendleft(reversed(still_pending))
+                if still_pending:
+                    self.logger.info(
+                        "Re-queueing %s task(s) for model %s to form a fresh batch after validation failure.",
+                        len(still_pending),
+                        connector.model,
+                    )
+                    pending.extendleft(reversed(still_pending))
 
         if self.shutdown_event.is_set():
             for task_id, state in list(states.items()):

@@ -350,22 +350,12 @@ class BatchProcessingPipeline:
     def _create_connectors(
         self, endpoints: Mapping[str, str], spec: PromptSpecification
     ) -> Dict[str, ModelConnector]:
-        compliance_interval = int(
-            self.config.get("COMPLIANCE_REMINDER_INTERVAL", 0) or 0
-        )
-        if compliance_interval > 0:
-            self.logger.info(
-                "Automatic JSON compliance reminders every %s headline(s).",
-                compliance_interval,
-            )
-
         connectors: Dict[str, ModelConnector] = {}
         for model, url in endpoints.items():
             connectors[model] = ModelConnector(
                 model,
                 url,
                 int(self.config.get("REQUEST_TIMEOUT", 60) or 60),
-                compliance_interval,
                 self.logger,
                 self.config.get("EXPECTED_LANGUAGE"),
                 prompt_spec=spec,

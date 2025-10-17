@@ -47,9 +47,6 @@ override just the keys you care about.
 
 - `LLM_BLOCKLIST` removes unwanted models from consideration even if they are
   running or explicitly listed.
-- `COMPLIANCE_REMINDER_INTERVAL` (0 disables) automatically replays the
-  JSON-compliance reminder after every _N_ headlines to keep long sessions on
-  track.
 - `TASK_BATCH_SIZE` controls how many headlines are sent to each connector per
   LLM request. Increase it to process more titles per round-trip; decrease it
   if a model struggles with large payloads.
@@ -59,9 +56,8 @@ Active override sources are logged on start-up.
 ## Runtime metrics
 
 Each run logs a summary with total runtime, success and failure rates, retry
-counts, and per-model averages. Connector-level reminders (manual, automatic,
-and multi-object response warnings) are aggregated in the summary so you can
-spot models that drift off spec.
+counts, and per-model averages. Connector-level multi-object response warnings
+are aggregated in the summary so you can spot models that drift off spec.
 
 ## Installation
 
@@ -127,8 +123,6 @@ Key configuration options include:
   titles for dry runs.
 - `WRITE_STRATEGY`, `WRITE_BATCH_SIZE`, and `WRITE_BATCH_SECONDS`: Control how
   responses are persisted to disk.
-- `COMPLIANCE_REMINDER_INTERVAL`: Frequency (0 disables) of JSON-compliance
-  reminders injected into long sessions.
 - `LOG_DIR`, `GENERATED_DIR`, `BACKUP_DIR`: File system locations for runtime
   artefacts.
 

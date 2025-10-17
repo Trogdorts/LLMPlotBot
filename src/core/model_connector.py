@@ -47,7 +47,6 @@ class ModelConnector:
         model: str,
         url: str,
         request_timeout: int,
-        compliance_interval: int,
         logger,
         expected_language: str | None = None,
         *,
@@ -57,7 +56,6 @@ class ModelConnector:
         self.url = url
         self.request_timeout = request_timeout
         self.logger = logger
-        self.compliance_interval = max(0, int(compliance_interval or 0))
         self.expected_language = (expected_language or "").strip().lower()
         self._prompt_spec = prompt_spec
         self._required_keys = prompt_spec.required_field_names
@@ -79,8 +77,6 @@ class ModelConnector:
         self._history_limit = 50  # stores up to 25 prompt/response pairs
         self._active = False
         self._headline_counter = 0
-        self._auto_compliance_reminders = 0
-        self._manual_compliance_reminders = 0
         self._array_warning_count = 0
         self._last_request_error: Optional[requests.RequestException] = None
         self._http: Session = Session()
@@ -252,14 +248,6 @@ class ModelConnector:
         error = self._last_request_error
         self._last_request_error = None
         return error
-
-    # ------------------------------------------------------------------
-    def reinforce_compliance(self) -> None:
-        """No-op retained for compatibility; format reminders are no longer sent."""
-        self.logger.debug(
-            "[%s] Compliance reminder skipped; relying on template instructions.",
-            self.model,
-        )
 
     # ------------------------------------------------------------------
     def _extract_response_entries(
@@ -601,9 +589,6 @@ class ModelConnector:
         coerced, item_replaced = self._coerce_to_string(value)
         return ([coerced] if coerced else []), item_replaced
 
-    def _maybe_send_auto_compliance_reminder(self) -> None:
-        return
-
     def _prune_history(self) -> None:
         """Trim stored history to the configured limit."""
 
@@ -615,14 +600,6 @@ class ModelConnector:
             # Keep only the most recent messages. We slice rather than popping in
             # a loop to avoid quadratic time behaviour.
             self._history = self._history[overflow:]
-
-    @property
-    def auto_compliance_reminders(self) -> int:
-        return self._auto_compliance_reminders
-
-    @property
-    def manual_compliance_reminders(self) -> int:
-        return self._manual_compliance_reminders
 
     @property
     def array_warning_count(self) -> int:

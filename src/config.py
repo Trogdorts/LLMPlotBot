@@ -13,6 +13,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "BASE_DIR": "./data",
     "BACKUP_DIR": "./backups",
     "LOG_DIR": "./logs",
+    "LOG_LEVEL_CONSOLE": "INFO",
+    "LOG_LEVEL_FILE": "INFO",
     "GENERATED_DIR": "./data/generated_data",
     "IGNORE_FOLDERS": ["backups", ".venv", "__pycache__", "logs"],
     "TEST_MODE": True,

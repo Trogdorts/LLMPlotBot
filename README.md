@@ -1,5 +1,10 @@
 # LLMPlotBot
 
+LLMPlotBot orchestrates end-to-end batch processing jobs for language models.
+It loads prompts, distributes headline tasks across available model endpoints,
+collects the responses, and persists the structured results alongside rich
+runtime metrics.
+
 ## Prompt authoring workflow
 
 Prompts live in a single `data/prompt.txt` file. The authoring convention keeps
@@ -57,3 +62,75 @@ Each run logs a summary with total runtime, success and failure rates, retry
 counts, and per-model averages. Connector-level reminders (manual, automatic,
 and multi-object response warnings) are aggregated in the summary so you can
 spot models that drift off spec.
+
+## Installation
+
+The project targets Python 3.11+. Create a virtual environment and install the
+dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Running the processor
+
+The default entry point lives in `main.py`. After activating your virtual
+environment, execute:
+
+```bash
+python main.py
+```
+
+The CLI bootstraps logging, loads configuration overrides, resolves active LLM
+endpoints, and then executes the batch pipeline. Logs, generated outputs, and
+archives are stored under the directories referenced in the configuration.
+
+## Configuring LLMPlotBot
+
+Configuration defaults are defined in `src/config.py` and materialised to
+`config/default.json` the first time you run the application. To customise
+behaviour without modifying tracked files, create a
+`config/config.local.json` file that overrides only the keys you need. The
+loader performs a deep merge, so nested dictionaries are combined instead of
+replaced.
+
+For example, to point at a remote model endpoint and enable batch writing:
+
+```json
+{
+  "LLM_ENDPOINTS": {
+    "gpt4": "http://example.com:8000/v1/completions"
+  },
+  "WRITE_STRATEGY": "batch",
+  "WRITE_BATCH_SIZE": 50
+}
+```
+
+You can also place a `config.local.json` at the project root or provide an
+absolute path via the `LLMPLOTBOT_CONFIG` environment variable if you want to
+store overrides elsewhere:
+
+```bash
+export LLMPLOTBOT_CONFIG=/path/to/custom-config.json
+python main.py
+```
+
+Key configuration options include:
+
+- `LLM_ENDPOINTS`: Explicit mapping of model names to HTTP endpoints. If
+  omitted, the pipeline queries LM Studio for available models and falls back
+  to `LLM_BASE_URL` and `LLM_MODELS`.
+- `TASK_BATCH_SIZE`: Number of tasks sent to each connector per request.
+- `TEST_MODE` and `TEST_LIMIT_PER_MODEL`: Limit processing to a subset of
+  titles for dry runs.
+- `WRITE_STRATEGY`, `WRITE_BATCH_SIZE`, and `WRITE_BATCH_SECONDS`: Control how
+  responses are persisted to disk.
+- `COMPLIANCE_REMINDER_INTERVAL`: Frequency (0 disables) of JSON-compliance
+  reminders injected into long sessions.
+- `LOG_DIR`, `GENERATED_DIR`, `BACKUP_DIR`: File system locations for runtime
+  artefacts.
+
+All active override sources are logged at startup, making it easy to confirm
+which configuration files were applied.

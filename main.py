@@ -8,6 +8,7 @@ from statistics import mean, stdev
 from src.core.model_connector import ModelConnector
 from src.core.writer import ResultWriter  # <-- reattached
 from src.config import DEFAULT_CONFIG     # reuse paths if available
+from src.util.prompt_utils import load_prompt, make_structured_prompt, try_parse_json, validate_entry
 
 # ===== CONFIG =====
 LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
@@ -25,10 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger("LLMPlotBot")
 
 
-def load_prompt(path: Path) -> str:
-    if not path.exists():
-        raise FileNotFoundError(f"Prompt file not found: {path}")
-    return path.read_text(encoding="utf-8").strip()
+
 
 
 def load_titles(path: Path) -> dict:
@@ -39,45 +37,7 @@ def load_titles(path: Path) -> dict:
     return data
 
 
-def make_structured_prompt(title: str) -> str:
-    return f"""
-You are a story-idea abstraction engine. 
-Fill in the following JSON structure completely based on the given title.
-Write natural, complete, realistic content for every field.
-Return ONLY valid JSON. Do not add commentary, markdown, or explanation.
 
-Title:
-"{title}"
-
-Required output schema:
-[
-  {{
-    "title": "{title}",
-    "core_event": "<one complete rewritten sentence under 50 words>",
-    "themes": ["concept1", "concept2"],
-    "tone": "<stylistic tone label>",
-    "conflict_type": "<short phrase for the central tension>",
-    "stakes": "<one concise sentence of what’s at risk>",
-    "setting_hint": "<short location or situational hint>",
-    "characters": ["role1", "role2"],
-    "potential_story_hooks": ["hook1", "hook2"]
-  }}
-]
-Output must start with [ and end with ] and be valid JSON.
-"""
-
-
-def try_parse_json(text: str):
-    try:
-        return json.loads(text)
-    except Exception:
-        return None
-
-
-def validate_entry(entry: dict) -> bool:
-    """Quick sanity check on a single parsed JSON entry."""
-    required = {"core_event", "themes", "tone"}
-    return all(k in entry for k in required)
 
 
 def summarize_batch(times, valid_json_count, total_count):
@@ -108,8 +68,8 @@ def main():
         return
 
     if not ("CONFIRM" in content.upper() or content.strip().startswith("[")):
-        logger.warning("Initialization message not a confirmation; continuing anyway.")
-        print(content)
+        logger.warning(f"Initialization message not a confirmation; continuing anyway. Raw Content: {content}")
+
 
     logger.info("CONFIRM received or skipped; proceeding.")
     sample_keys = random.sample(list(titles.keys()), TEST_SAMPLE_SIZE)
@@ -124,10 +84,8 @@ def main():
         resp, elapsed = connector.send_to_model(structured_prompt, key)
         msg = connector.extract_content(resp)
         parsed = try_parse_json(msg)
-
-        print("\n--- RAW RESPONSE ---")
-        print(msg)
-        print("--------------------")
+        logger.debug(f"RECEIVED RAW: {msg}")
+        logger.debug(f"RECEIVED PARSED: {parsed}")
 
         if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
             first_entry = parsed[0]
@@ -139,9 +97,7 @@ def main():
                 logger.warning(f"{key}: JSON missing required fields.")
         else:
             logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
-            print("❌ Invalid JSON returned.")
 
-        print("--------------------\n")
         times.append(elapsed)
 
         if i % 10 == 0 or i == TEST_SAMPLE_SIZE:

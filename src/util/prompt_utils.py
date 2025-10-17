@@ -1,7 +1,7 @@
 """Prompt utilities that assemble instructions from a structured specification."""
 
 from __future__ import annotations
-
+from pathlib import Path
 import hashlib
 import json
 import os
@@ -21,6 +21,50 @@ PROMPT_FILENAME = "prompt.txt"
 PROMPT_ARCHIVE_DIRNAME = "prompts"
 PROMPT_META_FILENAME = "prompt_index.json"
 
+
+def load_prompt(path: Path) -> str:
+    if not path.exists():
+        raise FileNotFoundError(f"Prompt file not found: {path}")
+    return path.read_text(encoding="utf-8").strip()
+def make_structured_prompt(title: str) -> str:
+    return f"""
+You are a story-idea abstraction engine. 
+Fill in the following JSON structure completely based on the given title.
+Write natural, complete, realistic content for every field.
+Return ONLY valid JSON. Do not add commentary, markdown, or explanation.
+
+Title:
+"{title}"
+
+Required output schema:
+[
+  {{
+    "title": "{title}",
+    "core_event": "<one complete rewritten sentence under 50 words>",
+    "themes": ["concept1", "concept2"],
+    "tone": "<stylistic tone label>",
+    "conflict_type": "<short phrase for the central tension>",
+    "stakes": "<one concise sentence of what’s at risk>",
+    "setting_hint": "<short location or situational hint>",
+    "characters": ["role1", "role2"],
+    "potential_story_hooks": ["hook1", "hook2"]
+  }}
+]
+Output must start with [ and end with ] and be valid JSON.
+"""
+
+
+def try_parse_json(text: str):
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def validate_entry(entry: dict) -> bool:
+    """Quick sanity check on a single parsed JSON entry."""
+    required = {"core_event", "themes", "tone"}
+    return all(k in entry for k in required)
 
 @dataclass
 class PromptBundle:

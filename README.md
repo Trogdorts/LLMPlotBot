@@ -124,6 +124,7 @@ Key configuration options include:
   reminders injected into long sessions.
 - `LOG_DIR`, `GENERATED_DIR`, `BACKUP_DIR`: File system locations for runtime
   artefacts.
+- `LOG_LEVEL`: Console log verbosity (e.g. `"DEBUG"`, `"INFO"`).
 
 All active override sources are logged at startup, making it easy to confirm
 which configuration files were applied.

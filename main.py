@@ -7,7 +7,8 @@ from statistics import mean, stdev
 
 from src.core.model_connector import ModelConnector
 from src.core.writer import ResultWriter  # <-- reattached
-from src.config import DEFAULT_CONFIG     # reuse paths if available
+from src.config import CONFIG, DEFAULT_CONFIG     # reuse paths if available
+from src.util.logger_setup import resolve_log_level
 from src.util.prompt_utils import load_prompt, make_structured_prompt, try_parse_json, validate_entry
 
 # ===== CONFIG =====
@@ -21,7 +22,7 @@ GENERATED_DIR = Path(DEFAULT_CONFIG["GENERATED_DIR"])
 # ==================
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=resolve_log_level(CONFIG.get("LOG_LEVEL"), default=logging.INFO),
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger("LLMPlotBot")

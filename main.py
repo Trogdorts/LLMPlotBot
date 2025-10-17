@@ -7,7 +7,8 @@ from statistics import mean, stdev
 
 from src.core.model_connector import ModelConnector
 from src.core.writer import ResultWriter  # <-- reattached
-from src.config import DEFAULT_CONFIG     # reuse paths if available
+from src.config import CONFIG, DEFAULT_CONFIG     # reuse paths if available
+from src.util.logger_setup import resolve_log_level
 from src.util.prompt_utils import load_prompt, make_structured_prompt, try_parse_json, validate_entry
 
 # ===== CONFIG =====
@@ -16,11 +17,11 @@ TITLES_PATH = Path("data/titles_index.json")
 PROMPT_PATH = Path("data/prompt.txt")
 MODEL = "creative-writing-model"
 TEST_SAMPLE_SIZE = 10
-GENERATED_DIR = Path(DEFAULT_CONFIG["GENERATED_DIR"])
+GENERATED_DIR = Path(CONFIG.get("GENERATED_DIR", DEFAULT_CONFIG["GENERATED_DIR"]))
 # ==================
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=resolve_log_level(CONFIG.get("LOG_LEVEL"), default=logging.INFO),
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger("LLMPlotBot")

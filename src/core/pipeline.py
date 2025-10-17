@@ -65,7 +65,7 @@ class BatchProcessingPipeline:
         if not titles:
             self.logger.error("No titles available for processing.")
             return False
-        self.logger.info("Loaded %s titles for processing.", len(titles))
+        original_title_count = len(titles)
 
         prompt_bundle = self._load_prompt()
         prompt_hash = prompt_bundle.prompt_hash
@@ -75,6 +75,24 @@ class BatchProcessingPipeline:
         result_checker = ExistingResultChecker(
             self.config["GENERATED_DIR"], self.logger
         )
+
+        titles = self._filter_titles_for_run(titles, result_checker, endpoints.keys())
+        if not titles:
+            self.logger.warning(
+                "All %s loaded titles already have generated output for the active models.",
+                original_title_count,
+            )
+            return False
+
+        filtered_count = len(titles)
+        if filtered_count != original_title_count:
+            self.logger.info(
+                "Loaded %s titles for processing after skipping %s existing result(s).",
+                filtered_count,
+                original_title_count - filtered_count,
+            )
+        else:
+            self.logger.info("Loaded %s titles for processing.", filtered_count)
 
         planner = BatchPlanner(
             titles,
@@ -136,6 +154,55 @@ class BatchProcessingPipeline:
             self.logger.info("=== Shutdown complete ===")
 
         return True
+
+    # ------------------------------------------------------------------
+    def _filter_titles_for_run(
+        self,
+        titles: Mapping[str, Mapping[str, object]],
+        result_checker: ExistingResultChecker,
+        models: Iterable[str],
+    ) -> Mapping[str, Mapping[str, object]]:
+        """Remove titles that already have generated output when not testing."""
+
+        if self.config.get("TEST_MODE"):
+            return titles
+
+        active_models = tuple(models)
+        filtered: Dict[str, Mapping[str, object]] = {}
+        skipped_existing = 0
+        skipped_by_model = 0
+
+        for identifier, info in titles.items():
+            if active_models and any(
+                result_checker.has_model_entry(identifier, model)
+                for model in active_models
+            ):
+                skipped_by_model += 1
+                continue
+
+            if result_checker.record_exists(identifier):
+                skipped_existing += 1
+                continue
+
+            filtered[identifier] = info
+
+        skipped_total = skipped_existing + skipped_by_model
+        if skipped_total:
+            details = []
+            if skipped_existing:
+                details.append(f"{skipped_existing} with existing JSON files")
+            if skipped_by_model:
+                details.append(
+                    f"{skipped_by_model} with entries for active model(s)"
+                )
+            detail_msg = "; ".join(details)
+            self.logger.info(
+                "Skipping %s title(s) that already have generated output (%s).",
+                skipped_total,
+                detail_msg,
+            )
+
+        return filtered
 
     # ------------------------------------------------------------------
     def _log_startup(self) -> None:

@@ -344,25 +344,12 @@ class BatchProcessingPipeline:
             if supports_expected_language:
                 kwargs["expected_language"] = expected_language
 
-            try:
-                connectors[model] = ModelConnector(
-                    model,
-                    url,
-                    timeout,
-                    self.logger,
-                    **kwargs,
-                )
-            except TypeError as exc:
-                if kwargs:
-                    self.logger.debug(
-                        "ModelConnector rejected extended signature (%s); retrying legacy constructor.",
-                        exc,
-                    )
-                connectors[model] = ModelConnector(
-                    model,
-                    url,
-                    timeout,
-                    self.logger,
-                )
+            connectors[model] = ModelConnector(
+                model,
+                url,
+                timeout,
+                self.logger,
+                **kwargs,
+            )
         self.logger.info("Initialized %s connector(s).", len(connectors))
         return connectors

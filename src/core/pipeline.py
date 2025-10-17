@@ -1,6 +1,7 @@
 """High-level orchestration for the LLM batch processing workflow."""
 
 from __future__ import annotations
+import inspect
 import logging
 import os
 import threading
@@ -324,16 +325,31 @@ class BatchProcessingPipeline:
                 compliance_interval,
             )
 
-        connectors = {
-            model: ModelConnector(
+        timeout = int(self.config.get("REQUEST_TIMEOUT", 90))
+        connector_params = inspect.signature(ModelConnector).parameters
+        supports_compliance = "compliance_interval" in connector_params
+        supports_expected_language = "expected_language" in connector_params
+
+        if not supports_compliance or not supports_expected_language:
+            self.logger.debug(
+                "ModelConnector does not expose compliance/expected-language arguments;"
+                " falling back to legacy signature."
+            )
+
+        connectors = {}
+        for model, url in endpoints.items():
+            kwargs = {}
+            if supports_compliance:
+                kwargs["compliance_interval"] = compliance_interval
+            if supports_expected_language:
+                kwargs["expected_language"] = expected_language
+
+            connectors[model] = ModelConnector(
                 model,
                 url,
-                int(self.config.get("REQUEST_TIMEOUT", 90)),
+                timeout,
                 self.logger,
-                compliance_interval=compliance_interval,
-                expected_language=expected_language,
+                **kwargs,
             )
-            for model, url in endpoints.items()
-        }
         self.logger.info("Initialized %s connector(s).", len(connectors))
         return connectors

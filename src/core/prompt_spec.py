@@ -99,6 +99,15 @@ class PromptSpecification:
         entries = [self.build_example_object(idx + 1) for idx in range(total)]
         return json.dumps(entries, ensure_ascii=False, indent=2)
 
+    def build_response_template(self, *, title_placeholder: str = "<headline>") -> str:
+        """Return a JSON object template with empty values for the model to fill."""
+
+        template = OrderedDict()
+        template["title"] = title_placeholder
+        for field in self.fields:
+            template[field.name] = [] if field.is_list() else ""
+        return json.dumps(template, ensure_ascii=False, indent=2)
+
 
 class PromptBuilder:
     """Create final prompt sections from a :class:`PromptSpecification`."""
@@ -142,23 +151,28 @@ class PromptBuilder:
 
     def build_formatting_section(self) -> str:
         spec = self.specification
-        lines: list[str] = ["### OUTPUT RULES"]
+        template = spec.build_response_template(
+            title_placeholder="<copy the numbered headline text>"
+        )
+
+        lines: list[str] = [
+            "### RESPONSE FORMAT",
+            "For each numbered headline, fill out the JSON object shown below and return a JSON array with one object per headline in the same order.",
+            "Copy the headline text into the `title` field and keep every other key exactly as provided.",
+            "Replace the empty values with your best answers while respecting the field constraints.",
+            "",
+            "Template to fill:",
+            template,
+            "",
+            "### OUTPUT RULES",
+        ]
+
         for rule in spec.formatting_rules:
             lines.append(f"- {rule}")
 
-        lines.extend(
-            [
-                "",
-                "### REQUIRED JSON SHAPE",
-                "Return one JSON object per headline using these keys in order:",
-            ]
+        lines.append(
+            "- Populate every key. Use empty strings or arrays only when no information can be inferred."
         )
-
-        for field in spec.fields:
-            descriptor = "array of strings" if field.is_list() else "string"
-            lines.append(f"- `{field.name}` ({descriptor})")
-
-        lines.append("- Do not drop keys even if you have no data; use empty strings or arrays.")
 
         return "\n".join(lines).strip()
 

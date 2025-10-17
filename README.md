@@ -35,9 +35,8 @@ python main.py
 
 The script sends an initial confirmation prompt. After the model acknowledges
 (or if you choose to continue without confirmation) a random sample of
-`TEST_SAMPLE_SIZE` titles is selected and sent for generation. Raw responses and
-other diagnostic details are emitted at the DEBUG log level for optional
-inspection.
+`TEST_SAMPLE_SIZE` titles is selected and sent for generation. Raw responses are
+printed to the console for inspection.
 
 Valid JSON responses are persisted to `data/generated_data/<title_id>.json`.
 Each file contains the most recent response grouped by model and prompt hash.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 from pathlib import Path
 
@@ -85,74 +85,115 @@ class ResultWriter:
         tmp = path.with_name(path.name + ".tmp")
         lock_path = path.with_name(path.name + ".lock")
 
-        with FileLock(
-            str(lock_path),
-            timeout=self.lock_timeout,
-            poll_interval=self.lock_poll_interval,
-            stale_seconds=self.lock_stale_seconds,
-        ):
-            data: Dict[str, Any] = {}
+        prepared_records: List[Tuple[str, str, Dict[str, Any], str]] = []
+        for _, model, prompt_hash, response in records:
+            payload = dict(response)
+            title = str(payload.pop("title", "") or "")
+            prepared_records.append((model, prompt_hash, payload, title))
 
-            if path.exists():
-                try:
-                    with path.open("r", encoding="utf-8") as f:
-                        data = json.load(f)
-                except Exception:
-                    data = {}
+        def _load_existing(
+            target: Path,
+        ) -> Tuple[Dict[str, Any], str, Optional[float]]:
+            data: Dict[str, Any] = {}
+            mtime: Optional[float] = None
+
+            try:
+                stat_result = target.stat()
+                mtime = stat_result.st_mtime
+                with target.open("r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except FileNotFoundError:
+                data = {}
+                mtime = None
+            except Exception:
+                data = {}
 
             if not isinstance(data, dict):
                 data = {}
 
-            existing_title = data.get("title", "") if isinstance(data, dict) else ""
-            models_section = data.setdefault("llm_models", {})
+            existing_title = str(data.get("title", "") or "")
+            models_section = data.get("llm_models")
             if not isinstance(models_section, dict):
                 models_section = {}
                 data["llm_models"] = models_section
 
+            return data, existing_title, mtime
+
+        while True:
+            data, existing_title, last_mtime = _load_existing(path)
+
+            models_section = data.setdefault("llm_models", {})
+            written = 0
             chosen_title = existing_title
 
-            title = response.get("title", "")
-            if title and not chosen_title:
-                chosen_title = title
-            elif (
-                title
-                and chosen_title
-                and title != chosen_title
-                and self.logger is not None
-            ):
-                self.logger.warning(
-                    "Conflicting titles for %s; keeping existing value '%s'.",
-                    id,
-                    chosen_title,
-                )
+            for model, prompt_hash, payload, title in prepared_records:
+                if title and not chosen_title:
+                    chosen_title = title
+                elif (
+                    title
+                    and chosen_title
+                    and title != chosen_title
+                    and self.logger is not None
+                ):
+                    self.logger.warning(
+                        "Conflicting titles for %s; keeping existing value '%s'.",
+                        id,
+                        chosen_title,
+                    )
 
-            payload = dict(response)
-            payload.pop("title", None)
-
-            model_entry = models_section.setdefault(model, {})
-            if not isinstance(model_entry, dict):
-                model_entry = {}
-                models_section[model] = model_entry
+                model_entry = models_section.setdefault(model, {})
+                if not isinstance(model_entry, dict):
+                    model_entry = {}
+                    models_section[model] = model_entry
 
             model_entry[prompt_hash] = payload
 
             if chosen_title:
                 data["title"] = chosen_title
 
-            ordered_data: Dict[str, Any] = {}
-
-            ordered_data["title"] = data.get("title", "")
-            ordered_data["llm_models"] = data.get("llm_models", {})
+            ordered_data: Dict[str, Any] = {
+                "title": data.get("title", ""),
+                "llm_models": data.get("llm_models", {}),
+            }
 
             for key, value in data.items():
                 if key in {"title", "llm_models"}:
                     continue
                 ordered_data[key] = value
 
-            with tmp.open("w", encoding="utf-8") as f:
-                json.dump(ordered_data, f, ensure_ascii=False, indent=2)
-                f.write("\n")
-            os.replace(tmp, path)
+            serialized = json.dumps(ordered_data, ensure_ascii=False, indent=2) + "\n"
 
-        return
+            with FileLock(
+                str(lock_path),
+                timeout=self.lock_timeout,
+                poll_interval=self.lock_poll_interval,
+                stale_seconds=self.lock_stale_seconds,
+            ):
+                current_mtime: Optional[float]
+                try:
+                    current_mtime = path.stat().st_mtime
+                except FileNotFoundError:
+                    current_mtime = None
+
+                if current_mtime != last_mtime:
+                    continue
+
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+
+                with tmp.open("w", encoding="utf-8") as handle:
+                    handle.write(serialized)
+
+                os.replace(tmp, path)
+
+            if self.logger:
+                self.logger.debug(
+                    "Saved %s batch with %s record(s).", id, len(records)
+                )
+
+            return written
 

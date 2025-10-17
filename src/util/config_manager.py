@@ -38,7 +38,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 _CONFIG_DIRNAME = "config"
-_DEFAULT_CONFIG_FILENAME = "default.json"
+_CONFIG_FILENAME = "config.json"
 _OVERRIDE_FILENAMES = ("config.local.json",)
 _ENV_OVERRIDE = "LLMPLOTBOT_CONFIG"
 
@@ -79,7 +79,7 @@ class ConfigManager:
     defaults: Dict[str, Any]
     project_root: Path
     config_dirname: str = _CONFIG_DIRNAME
-    default_filename: str = _DEFAULT_CONFIG_FILENAME
+    config_filename: str = _CONFIG_FILENAME
     override_filenames: Tuple[str, ...] = _OVERRIDE_FILENAMES
     env_override: str = _ENV_OVERRIDE
 
@@ -88,28 +88,28 @@ class ConfigManager:
         return self.project_root / self.config_dirname
 
     @property
-    def default_path(self) -> Path:
-        return self.config_dir / self.default_filename
+    def config_path(self) -> Path:
+        return self.config_dir / self.config_filename
 
-    def ensure_default_config(self) -> Dict[str, Any]:
-        """Make sure the default configuration file exists and is up-to-date."""
+    def ensure_config(self) -> Dict[str, Any]:
+        """Ensure the primary configuration file exists and is synchronised."""
 
         self.config_dir.mkdir(parents=True, exist_ok=True)
         base_defaults = deepcopy(self.defaults)
 
-        if self.default_path.exists():
+        if self.config_path.exists():
             try:
-                stored = _load_json(self.default_path)
+                stored = _load_json(self.config_path)
             except Exception as exc:  # pragma: no cover - defensive error enrichment
                 raise ValueError(
-                    f"Unable to load default configuration from {self.default_path}: {exc}"
+                    f"Unable to load configuration from {self.config_path}: {exc}"
                 ) from exc
             merged = _merge_dicts(base_defaults, stored)
             if merged != stored:
-                _write_json(self.default_path, merged)
+                _write_json(self.config_path, merged)
             return merged
 
-        _write_json(self.default_path, base_defaults)
+        _write_json(self.config_path, base_defaults)
         return base_defaults
 
     def _candidate_paths(self, override_paths: Iterable[str] | None) -> Iterator[Path]:
@@ -134,14 +134,12 @@ class ConfigManager:
         include_sources: bool = False,
     ) -> Tuple[Dict[str, Any], Tuple[str, ...]] | Dict[str, Any]:
         config = deepcopy(self.defaults)
-        default_values = self.ensure_default_config()
+        config_values = self.ensure_config()
 
         sources: list[str] = []
-        default_resolved = self.default_path.resolve(strict=False)
-        config = _merge_dicts(config, default_values)
-        sources.append(default_resolved.as_posix())
+        config_resolved = self.config_path.resolve(strict=False)
 
-        seen: set[Path] = {default_resolved}
+        seen: set[Path] = {config_resolved}
         for candidate in self._candidate_paths(override_paths):
             try:
                 resolved = candidate.resolve(strict=False)
@@ -156,6 +154,9 @@ class ConfigManager:
             config = _merge_dicts(config, overrides)
             sources.append(resolved.as_posix())
             seen.add(resolved)
+
+        config = _merge_dicts(config, config_values)
+        sources.append(config_resolved.as_posix())
 
         if include_sources:
             return config, tuple(sources)

@@ -33,10 +33,11 @@ the structured data returned by the LLM.
 
 ## Configuration and overrides
 
-Defaults live in `src/util/config_manager.py` and are mirrored into `config/default.json` the
-first time the application starts. The loader keeps that file in sync with new
-defaults so you can tweak values without losing upstream changes. Override any
-value by creating a `config/config.local.json` file (preferred), by adding
+Defaults live in `src/util/config_manager.py`. The first time the application
+starts it creates `config/config.json` with those defaults so you can tweak
+values without losing upstream changes. Settings defined in `config/config.json`
+take precedence over any other overrides. Additional customisation can be
+layered by creating a `config/config.local.json` file (preferred), by adding
 `config.local.json` at the project root, or by pointing the `LLMPLOTBOT_CONFIG`
 environment variable at another JSON file. Values are merged deeply, so you can
 override just the keys you care about.
@@ -85,8 +86,8 @@ archives are stored under the directories referenced in the configuration.
 
 ## Configuring LLMPlotBot
 
-Configuration defaults are defined in `src/util/config_manager.py` and materialised to
-`config/default.json` the first time you run the application. To customise
+Configuration defaults are defined in `src/util/config_manager.py` and
+materialised to `config/config.json` the first time you run the application. To customise
 behaviour without modifying tracked files, create a
 `config/config.local.json` file that overrides only the keys you need. The
 loader performs a deep merge, so nested dictionaries are combined instead of

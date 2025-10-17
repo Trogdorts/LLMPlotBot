@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Mapping, Sequence
 
 from pathlib import Path
 
@@ -37,15 +37,64 @@ class ResultWriter:
     def write(self, id: str, model: str, prompt_hash: str, response: Dict[str, Any]):
         """Persist a single response with retry handling for lock contention."""
 
+        payload = dict(response)
+        title = str(payload.pop("title", "") or "")
+        self._persist_records_with_retry(
+            id,
+            [(model, prompt_hash, payload, title)],
+            debug_label=f"model {model}",
+        )
+
+    # ------------------------------------------------------------------
+    def write_many(
+        self,
+        id: str,
+        records: Sequence[Tuple[str, str, Mapping[str, Any]]],
+    ) -> None:
+        """Persist multiple responses for the same identifier in one operation."""
+
+        if not records:
+            return
+
+        prepared: List[Tuple[str, str, Dict[str, Any], str]] = []
+        for model, prompt_hash, response in records:
+            payload = dict(response)
+            title = str(payload.pop("title", "") or "")
+            prepared.append((model, prompt_hash, payload, title))
+
+        self._persist_records_with_retry(
+            id,
+            prepared,
+            debug_label=f"batch of {len(prepared)} record(s)",
+        )
+
+    # ------------------------------------------------------------------
+    def flush(self):
+        """Compatibility shim for previous API; immediate writes need no flushing."""
+        return
+
+    # ------------------------------------------------------------------
+    def _persist_records_with_retry(
+        self,
+        id: str,
+        prepared_records: Sequence[Tuple[str, str, Dict[str, Any], str]],
+        *,
+        debug_label: str,
+    ) -> None:
         attempts_remaining = self.retry_limit
         backoff_step = 0
 
         while attempts_remaining > 0:
             attempts_remaining -= 1
             try:
-                self._persist_record(id, model, prompt_hash, response)
+                written = self._persist_records(id, prepared_records)
                 if self.logger:
-                    self.logger.debug("Saved %s for model %s.", id, model)
+                    self.logger.debug(
+                        "Saved %s with %s (wrote %s record(s)).",
+                        id,
+                        debug_label,
+                        written,
+                    )
                 return
             except FileLockTimeout as exc:
                 if self.logger:
@@ -73,23 +122,12 @@ class ResultWriter:
             )
 
     # ------------------------------------------------------------------
-    def flush(self):
-        """Compatibility shim for previous API; immediate writes need no flushing."""
-        return
-
-    # ------------------------------------------------------------------
-    def _persist_record(
-        self, id: str, model: str, prompt_hash: str, response: Dict[str, Any]
-    ) -> None:
+    def _persist_records(
+        self, id: str, prepared_records: Sequence[Tuple[str, str, Dict[str, Any], str]]
+    ) -> int:
         path = self.base / f"{id}.json"
         tmp = path.with_name(path.name + ".tmp")
         lock_path = path.with_name(path.name + ".lock")
-
-        payload = dict(response)
-        title = str(payload.pop("title", "") or "")
-        prepared_records: List[Tuple[str, str, Dict[str, Any], str]] = [
-            (model, prompt_hash, payload, title)
-        ]
 
         def _load_existing(
             target: Path,

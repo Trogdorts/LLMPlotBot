@@ -7,6 +7,7 @@
   "FILE_LOCK_STALE_SECONDS": 300.0,
   "FILE_LOCK_TIMEOUT": 10.0,
   "GENERATED_DIR": "./data/generated_data",
+  "BATCH_SUMMARY_INTERVAL": 100,
   "IGNORE_FOLDERS": [
     "backups",
     ".venv",

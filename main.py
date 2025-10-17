@@ -29,6 +29,7 @@ MODEL = "creative-writing-model"
 TEST_SAMPLE_SIZE = 10
 CONSECUTIVE_FAILURE_LIMIT = 3
 GENERATED_DIR = Path(DEFAULT_CONFIG["GENERATED_DIR"])
+SUMMARY_INTERVAL = max(int(CONFIG.get("BATCH_SUMMARY_INTERVAL", 100) or 0), 1)
 # ==================
 
 logging.basicConfig(
@@ -336,7 +337,7 @@ def main():
                 handshake_success = resend_instructions("REINSTRUCT")
                 consecutive_failures = 0 if handshake_success else consecutive_failures
 
-            if i % 10 == 0 or i == TEST_SAMPLE_SIZE:
+            if SUMMARY_INTERVAL and len(batch_records) - last_summary_size >= SUMMARY_INTERVAL:
                 summarize_batch(batch_records)
                 last_summary_size = len(batch_records)
 

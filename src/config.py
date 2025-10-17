@@ -15,6 +15,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "LOG_DIR": "./logs",
     "LOG_LEVEL": "INFO",
     "GENERATED_DIR": "./data/generated_data",
+    "BATCH_SUMMARY_INTERVAL": 100,
     "IGNORE_FOLDERS": ["backups", ".venv", "__pycache__", "logs"],
     "TEST_MODE": True,
     "TEST_LIMIT_PER_MODEL": 10,

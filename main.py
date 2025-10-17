@@ -2,10 +2,13 @@ import json
 import logging
 import math
 import random
+import signal
 import time
 from collections import Counter
 from pathlib import Path
 from statistics import mean, median, stdev
+
+from threading import Event
 
 from src.config import CONFIG, DEFAULT_CONFIG  # reuse paths if available
 from src.core.model_connector import ModelConnector
@@ -35,7 +38,51 @@ logging.basicConfig(
 logger = logging.getLogger("LLMPlotBot")
 
 
+def _install_signal_handlers(stop_event: Event):
+    """Install signal handlers that request a graceful shutdown."""
 
+    handled_signals = []
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            previous = signal.getsignal(signum)
+            signal.signal(
+                signum,
+                lambda s, f, *, _prev=previous: _handle_signal(s, f, stop_event, _prev),
+            )
+        except (ValueError, OSError):  # pragma: no cover - platform differences
+            continue
+        else:
+            handled_signals.append((signum, previous))
+
+    def restore():
+        for signum, previous in handled_signals:
+            try:
+                signal.signal(signum, previous)
+            except (ValueError, OSError):  # pragma: no cover - platform differences
+                continue
+
+    return restore
+
+
+def _handle_signal(signum, frame, stop_event: Event, previous_handler):
+    """Shared logic for installed signal handlers."""
+
+    if not stop_event.is_set():
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:  # pragma: no cover - defensive
+            name = str(signum)
+        logger.info("Received %s; requesting graceful shutdown.", name)
+    stop_event.set()
+
+    if signum == getattr(signal, "SIGINT", None):
+        raise KeyboardInterrupt
+
+    if callable(previous_handler):
+        previous_handler(signum, frame)
 
 
 def load_titles(path: Path) -> dict:
@@ -182,7 +229,13 @@ def main():
 
     connector = ModelConnector(MODEL, LM_STUDIO_URL, 90, logger=logger)
 
+    stop_event = Event()
+    restore_signals = _install_signal_handlers(stop_event)
+
     def resend_instructions(tag: str) -> bool:
+        if stop_event.is_set():
+            logger.info("Skipping %s instruction resend due to shutdown request.", tag)
+            return False
         logger.info("Sending initialization prompt to LM Studio. [%s]", tag)
         try:
             response, _ = connector.send_to_model(prompt, tag)
@@ -206,69 +259,107 @@ def main():
             logger.info("Instructions acknowledged on %s.", tag)
         return True
 
-    if not resend_instructions("INIT"):
-        logger.warning("Initial instruction handshake failed; aborting run.")
-        return
-    sample_keys = random.sample(list(titles.keys()), TEST_SAMPLE_SIZE)
+    try:
+        if not resend_instructions("INIT"):
+            logger.warning("Initial instruction handshake failed; aborting run.")
+            return
+        sample_keys = random.sample(list(titles.keys()), TEST_SAMPLE_SIZE)
 
-    batch_records = []
+        batch_records = []
+        last_summary_size = 0
 
-    consecutive_failures = 0
+        consecutive_failures = 0
 
-    for i, key in enumerate(sample_keys, start=1):
-        title = titles[key]["title"]
-        logger.info(f"[{i}/{TEST_SAMPLE_SIZE}] {key}: {title[:80]}")
-        structured_prompt = make_structured_prompt(title)
+        for i, key in enumerate(sample_keys, start=1):
+            if stop_event.is_set():
+                logger.info("Shutdown requested; stopping before processing remaining tasks.")
+                break
 
-        resp, elapsed = connector.send_to_model(structured_prompt, key)
-        msg = connector.extract_content(resp)
-        parsed = try_parse_json(msg)
-        logger.debug(f"RECEIVED RAW: {msg}")
-        logger.debug(f"RECEIVED PARSED: {parsed}")
+            title = titles[key]["title"]
+            logger.info(f"[{i}/{TEST_SAMPLE_SIZE}] {key}: {title[:80]}")
+            structured_prompt = make_structured_prompt(title)
 
-        success = False
-        failure_reason = None
+            success = False
+            failure_reason = None
+            elapsed = 0.0
 
-        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-            first_entry = parsed[0]
-            if validate_entry(first_entry):
-                writer.write(key, MODEL, "prompt_hash_placeholder", first_entry)
-                success = True
-                logger.info(f"{key}: ✅ Valid JSON saved.")
-                consecutive_failures = 0
-            else:
-                logger.warning(f"{key}: JSON missing required fields.")
-                failure_reason = "missing_required_fields"
+            try:
+                resp, elapsed = connector.send_to_model(structured_prompt, key)
+                msg = connector.extract_content(resp)
+                parsed = try_parse_json(msg)
+                logger.debug(f"RECEIVED RAW: {msg}")
+                logger.debug(f"RECEIVED PARSED: {parsed}")
+            except KeyboardInterrupt:
+                logger.info("Keyboard interrupt received; finalizing run.")
+                stop_event.set()
+                break
+            except Exception:
+                logger.exception("Unexpected error while processing %s.", key)
+                failure_reason = "unexpected_exception"
                 consecutive_failures += 1
-        else:
-            logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
-            failure_reason = "invalid_json"
-            consecutive_failures += 1
+            else:
+                if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                    first_entry = parsed[0]
+                    if validate_entry(first_entry):
+                        writer.write(key, MODEL, "prompt_hash_placeholder", first_entry)
+                        success = True
+                        logger.info(f"{key}: ✅ Valid JSON saved.")
+                        consecutive_failures = 0
+                    else:
+                        logger.warning(f"{key}: JSON missing required fields.")
+                        failure_reason = "missing_required_fields"
+                        consecutive_failures += 1
+                else:
+                    logger.warning(f"{key}: Invalid JSON returned after {elapsed:.2f}s.")
+                    failure_reason = "invalid_json"
+                    consecutive_failures += 1
 
-        batch_records.append(
-            {
-                "task_id": key,
-                "elapsed": elapsed,
-                "success": success,
-                "timestamp": time.time(),
-                "title_length": len(title),
-                "failure_reason": failure_reason,
-            }
-        )
+            if failure_reason and not success:
+                logger.debug("%s marked as failure due to %s.", key, failure_reason)
 
-        if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
-            logger.warning(
-                "Detected %s consecutive JSON failures. Resending instructions...",
-                consecutive_failures,
+            batch_records.append(
+                {
+                    "task_id": key,
+                    "elapsed": elapsed,
+                    "success": success,
+                    "timestamp": time.time(),
+                    "title_length": len(title),
+                    "failure_reason": failure_reason,
+                }
             )
-            handshake_success = resend_instructions("REINSTRUCT")
-            consecutive_failures = 0 if handshake_success else consecutive_failures
 
-        if i % 10 == 0 or i == TEST_SAMPLE_SIZE:
+            if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
+                logger.warning(
+                    "Detected %s consecutive JSON failures. Resending instructions...",
+                    consecutive_failures,
+                )
+                handshake_success = resend_instructions("REINSTRUCT")
+                consecutive_failures = 0 if handshake_success else consecutive_failures
+
+            if i % 10 == 0 or i == TEST_SAMPLE_SIZE:
+                summarize_batch(batch_records)
+                last_summary_size = len(batch_records)
+
+            if stop_event.is_set():
+                logger.info("Shutdown requested; ending loop before delay.")
+                break
+            time.sleep(0.5)
+
+        if batch_records and last_summary_size != len(batch_records):
             summarize_batch(batch_records)
-        time.sleep(0.5)
-
-    logger.info("=== TEST RUN COMPLETED ===")
+        logger.info("=== TEST RUN COMPLETED ===")
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received outside main loop; shutting down.")
+    finally:
+        stop_event.set()
+        try:
+            restore_signals()
+        finally:
+            try:
+                writer.flush()
+            finally:
+                connector.shutdown()
+        logger.info("Resources cleaned up. Exiting.")
 
 
 if __name__ == "__main__":

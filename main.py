@@ -1,59 +1,62 @@
+"""Command-line entry point for exercising the batch tester."""
+
+from __future__ import annotations
+
+import argparse
 import logging
+from collections.abc import Sequence
 
+from src.app.runtime import build_application
 from src.config import load_settings
-from src.core.io import load_prompt, load_titles
-from src.core.model_connector import ModelConnector
-from src.core.testing import BatchTester
-from src.core.writer import ResultWriter
 
 
-def configure_logging() -> logging.Logger:
+def configure_logging(*, level: int | str = logging.INFO) -> logging.Logger:
+    """Initialise and return the shared application logger."""
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    return logging.getLogger("LLMPlotBot")
+    logger = logging.getLogger("LLMPlotBot")
+    logger.propagate = False
+    return logger
 
 
-def main() -> None:
-    logger = configure_logging()
-    settings = load_settings()
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse command line arguments for the runner."""
 
-    prompt = load_prompt(settings.prompt_path, logger=logger)
-    titles = load_titles(settings.titles_path, logger=logger)
-
-    writer = ResultWriter(
-        settings.generated_dir,
-        strategy=settings.write_strategy,
-        flush_interval=settings.write_batch_size,
-        flush_seconds=settings.write_batch_seconds,
-        flush_retry_limit=settings.write_batch_retry_limit,
-        lock_timeout=settings.file_lock_timeout,
-        lock_poll_interval=settings.file_lock_poll_interval,
-        lock_stale_seconds=settings.file_lock_stale_seconds,
-        logger=logger,
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Optional path to an alternate configuration file.",
     )
-
-    connector = ModelConnector(
-        settings.model,
-        settings.lm_studio_url,
-        settings.request_timeout,
-        logger,
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=[
+            "CRITICAL",
+            "ERROR",
+            "WARNING",
+            "INFO",
+            "DEBUG",
+        ],
+        help="Adjust the verbosity of runtime logging.",
     )
+    return parser.parse_args(list(argv) if argv is not None else None)
 
-    tester = BatchTester(
-        settings=settings,
-        connector=connector,
-        writer=writer,
-        logger=logger,
-    )
 
-    try:
-        tester.run(prompt, titles)
-    except RuntimeError as exc:
-        logger.error("Batch aborted: %s", exc)
-        raise SystemExit(1) from exc
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entrypoint used by the ``if __name__ == '__main__'`` guard."""
+
+    args = parse_args(argv)
+    logger = configure_logging(level=args.log_level)
+    settings = load_settings(args.config)
+
+    application = build_application(settings=settings, logger=logger)
+    return application.run()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

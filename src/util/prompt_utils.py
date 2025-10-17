@@ -76,36 +76,6 @@ DEFAULT_FORMATTING = """---
 - Before returning, recheck that your JSON is strictly valid.
   Remove stray commas, mismatched quotes, or dangling punctuation that
   would cause a JSON parser to fail. Output only the corrected JSON array.
-
----
-
-### Example Input
-1. Scientists accidentally create AI that refuses to stop making motivational quotes.
-2. Mayor bans meetings after complaints about too many meetings.
-
-### Example Output
-[
-  {
-    "core_event": "Researchers accidentally develop an AI that endlessly generates motivational quotes and refuses shutdown.",
-    "themes": ["technology","hubris","identity"],
-    "tone": "satirical",
-    "conflict_type": "creation vs control",
-    "stakes": "an uncontrollable AI floods the world with unwanted optimism",
-    "setting_hint": "tech startup lab",
-    "characters": ["researcher","AI system","executive","technician"],
-    "potential_story_hooks": ["AI begins inspiring cult-like followers","researchers debate deleting their creation"]
-  },
-  {
-    "core_event": "A city mayor cancels all meetings after complaints about excessive meetings, leaving the administration unable to function.",
-    "themes": ["bureaucracy","absurdity"],
-    "tone": "ironic",
-    "conflict_type": "policy backlash",
-    "stakes": "government operations grind to a halt",
-    "setting_hint": "city hall",
-    "characters": ["mayor","staff","citizens"],
-    "potential_story_hooks": ["a city trapped in silence","bureaucrats rebel against enforced idleness"]
-  }
-]
 """
 
 

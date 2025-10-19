@@ -4,22 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
-from llmplotbot.config import load_config
-from llmplotbot.logging_utils import configure_logging
+
+def _ensure_src_on_path() -> None:
+    """Ensure the ``src`` directory is importable for local execution.
+
+    When running ``python main.py`` directly the ``src`` directory that holds
+    the project packages (``llmplotbot``, ``core``, etc.) is not automatically on
+    ``sys.path``. Installing the project or executing via ``python -m`` would
+    handle this for us, but keeping the helper means local runs work out of the
+    box without requiring additional environment tweaks.
+    """
+
+    project_root = Path(__file__).resolve().parent
+    src_path = project_root / "src"
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+
+
+_ensure_src_on_path()
+
 from llmplotbot.runtime import LLMPlotBotRuntime
 
 
 def main() -> int:
-    result = load_config(include_sources=True)
-    config, sources = result.config, result.sources
-    logging_config = dict(config.get("logging", {}))
-    paths = config.get("paths", {})
-    logging_config.setdefault("log_dir", paths.get("logs"))
-    logger = configure_logging(logging_config)
-    logger.info("Loaded configuration from: %s", ", ".join(sources) or "<defaults>")
-
-    runtime = LLMPlotBotRuntime(config, logger)
+    runtime = LLMPlotBotRuntime.from_defaults()
+    logger = runtime.logger
     try:
         success = asyncio.run(runtime.run())
     except KeyboardInterrupt:  # pragma: no cover - manual interruption

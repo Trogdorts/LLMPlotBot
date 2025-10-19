@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from json import JSONDecodeError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, List, Tuple
@@ -21,7 +22,13 @@ def load_titles(path: str | Path, *, source_dir: str | Path | None = None) -> Li
         if not source_dir:
             raise FileNotFoundError(f"Titles index not found: {file_path}")
         _regenerate_titles_index(file_path, Path(source_dir))
-    data = json.loads(file_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+    except JSONDecodeError:
+        if not source_dir:
+            raise
+        _regenerate_titles_index(file_path, Path(source_dir))
+        data = json.loads(file_path.read_text(encoding="utf-8"))
     headlines: List[Headline] = []
     if isinstance(data, dict):
         iterable: Iterable[tuple[str, object]] = data.items()

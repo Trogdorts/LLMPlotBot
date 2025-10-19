@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, Mapping, MutableMapping, Tuple
 import yaml
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = PROJECT_ROOT / "config"
 CONFIG_PATH = CONFIG_DIR / "config.yaml"
 ENV_CONFIG_PATH = "LLMPLOTBOT_CONFIG"

@@ -1,7 +1,7 @@
 """Core runtime components for LLMPlotBot."""
 
 from .job_manager import JobManager
-from .worker_pool import WorkerPool
+from .worker_pool import RetryConfig, WorkerPool
 from .ollama import OllamaConnector
 from .output_writer import OutputWriter
 from .metrics_manager import MetricsManager
@@ -12,6 +12,7 @@ from .graceful_shutdown import GracefulShutdown
 __all__ = [
     "JobManager",
     "WorkerPool",
+    "RetryConfig",
     "OllamaConnector",
     "OutputWriter",
     "MetricsManager",

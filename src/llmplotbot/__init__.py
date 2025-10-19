@@ -1,5 +1,5 @@
-"""LLMPlotBot - batch orchestration for structured LLM outputs."""
+"""LLMPlotBot runtime package."""
 
-from .pipeline import ProcessingPipeline
+from .runtime import LLMPlotBotRuntime
 
-__all__ = ["ProcessingPipeline"]
+__all__ = ["LLMPlotBotRuntime"]

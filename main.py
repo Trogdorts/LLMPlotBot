@@ -2,27 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 
 from llmplotbot.config import load_config
 from llmplotbot.logging_utils import configure_logging
-from llmplotbot.pipeline import ProcessingPipeline
+from llmplotbot.runtime import LLMPlotBotRuntime
 
 
 def main() -> int:
     result = load_config(include_sources=True)
     config, sources = result.config, result.sources
-    logger = configure_logging(config.get("LOG_LEVEL", "INFO"), log_dir=config.get("LOG_DIR"))
+    logging_config = dict(config.get("logging", {}))
+    paths = config.get("paths", {})
+    logging_config.setdefault("log_dir", paths.get("logs"))
+    logger = configure_logging(logging_config)
     logger.info("Loaded configuration from: %s", ", ".join(sources) or "<defaults>")
 
-    pipeline = ProcessingPipeline(config, logger=logger, config_sources=sources)
+    runtime = LLMPlotBotRuntime(config, logger)
     try:
-        success = pipeline.run()
+        success = asyncio.run(runtime.run())
     except KeyboardInterrupt:  # pragma: no cover - manual interruption
         logger.warning("Interrupted by user.")
         return 1
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.exception("Pipeline terminated due to unexpected error: %s", exc)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception("Runtime terminated due to unexpected error: %s", exc)
         return 1
     return 0 if success else 2
 

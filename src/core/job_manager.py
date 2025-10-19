@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
-from llmplotbot.utils.titles import Headline
+from utils.titles import Headline
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%S"
 

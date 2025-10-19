@@ -42,6 +42,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "prompt_archive": "prompts/archive",
         "jobs_db": "data/jobs.db",
         "titles_index": "data/titles_index.json",
+        "titles_source": r"C:\\Users\\criss\\OneDrive\\Desktop\\NTO_data\\json",
     },
     "logging": {
         "console_level": "INFO",
@@ -110,9 +111,15 @@ def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> Dict[str
 
 def _resolve_path(base_dir: Path, value: str) -> Path:
     path = Path(value)
-    if not path.is_absolute():
-        path = (base_dir / value).resolve()
-    return path
+    if path.is_absolute():
+        return path
+    # Treat Windows drive-letter and UNC paths as already absolute so they
+    # are not resolved relative to the project directory on Unix platforms.
+    if len(value) >= 2 and value[1] == ":":
+        return Path(value)
+    if value.startswith("\\\\") or value.startswith("//"):
+        return Path(value)
+    return (base_dir / value).resolve()
 
 
 def _apply_path_defaults(config: Dict[str, Any]) -> Dict[str, Any]:

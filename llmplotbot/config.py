@@ -45,7 +45,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "titles_source": r"C:\\Users\\criss\\OneDrive\\Desktop\\NTO_data\\json",
     },
     "logging": {
-        "console_level": "INFO",
+        "console_level": "DEBUG",
         "file_level": "DEBUG",
         "json_logs": False,
         "color": True,

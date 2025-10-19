@@ -61,7 +61,10 @@ class LLMPlotBotRuntime:
         self.logger.info("Loaded prompt hash %s", prompt_bundle.prompt_hash)
 
         try:
-            titles = load_titles(paths.get("titles_index"))
+            titles = load_titles(
+                paths.get("titles_index"),
+                source_dir=paths.get("titles_source"),
+            )
         except FileNotFoundError as exc:
             self.logger.error("Titles index not found: %s", exc)
             return False

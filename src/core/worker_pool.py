@@ -15,7 +15,7 @@ from .checkpoint_manager import CheckpointManager, CheckpointState
 from .job_manager import Job, JobManager
 from .ollama import OllamaConnector
 from .output_writer import OutputWriter
-from ..utils.prompts import PromptBundle
+from utils.prompts import PromptBundle
 
 
 @dataclass(frozen=True)

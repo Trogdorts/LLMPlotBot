@@ -9,16 +9,10 @@ The project targets Python 3.11+.
 ## Project layout
 
 ```
-src/llmplotbot/
-├── config.py          # Default configuration and layered override loading
-├── connectors.py      # Lightweight HTTP connector for chat-completion models
-├── endpoints.py       # Endpoint discovery (explicit config or LM Studio lookup)
-├── metrics.py         # Runtime metric aggregation
-├── pipeline.py        # High-level orchestration
-├── planner.py         # Headline loading and batch planning
-├── prompting.py       # Prompt specification, authoring, and archiving
-├── results.py         # Persistence utilities with lock-based writes
-└── logging_utils.py   # Logging setup helpers
+src/
+├── core/              # Durable job queue, worker pool, metrics, and connectors
+├── llmplotbot/        # Configuration loading, logging helpers, and runtime entry
+└── utils/             # Prompt and headline helpers shared across components
 ```
 
 `main.py` is the CLI entry point. Runtime artefacts (generated JSON, prompt
@@ -52,7 +46,7 @@ care about. Useful keys include:
 
 Prompts are stored in `data/prompt.txt`. Editing this file updates the dynamic
 instructions; the formatting section is regenerated automatically from the
-prompt specification defined in `src/llmplotbot/prompting.py`. A helper snippet
+prompt specification defined in `src/utils/prompts.py`. A helper snippet
 (`prompt_user_snippet.txt`) is created for quick iteration and every generated
 prompt is archived under `data/prompts/` with a hash-based filename. The active
 prompt contents are also backed up to `backups/prompt-<timestamp>.txt` at the

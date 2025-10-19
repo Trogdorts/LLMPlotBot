@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .config import load_config
-from .core import (
+from core import (
     CheckpointManager,
     GracefulShutdown,
     JobManager,
@@ -20,8 +20,8 @@ from .core import (
     WorkerPool,
 )
 from .logging_utils import configure_logging
-from .utils.prompts import PromptManager
-from .utils.titles import load_titles
+from utils.prompts import PromptManager
+from utils.titles import load_titles
 
 
 class LLMPlotBotRuntime:
